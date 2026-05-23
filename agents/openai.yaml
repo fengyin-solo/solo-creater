@@ -1,0 +1,7 @@
+interface:
+  display_name: "solo-create"
+  short_description: "为多轮出题、验收和续写提供完整流程"
+  default_prompt: "使用 $solo-create 先读取当前项目，再验收最新一轮 Solo 结果，必要时继续生成下一轮提示词。"
+
+policy:
+  allow_implicit_invocation: true
