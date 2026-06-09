@@ -7,7 +7,7 @@ import argparse
 import json
 import re
 import zipfile
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
@@ -167,7 +167,7 @@ def write_workbook(path: Path, records: list[dict[str, str]]) -> None:
  xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/"
  xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
 <dc:creator>solo-create</dc:creator><cp:lastModifiedBy>solo-create</cp:lastModifiedBy>
-<dcterms:created xsi:type="dcterms:W3CDTF">{datetime.now(UTC).isoformat()}</dcterms:created>
+<dcterms:created xsi:type="dcterms:W3CDTF">{datetime.now(timezone.utc).isoformat()}</dcterms:created>
 </cp:coreProperties>''',
     }
     path.parent.mkdir(parents=True, exist_ok=True)
