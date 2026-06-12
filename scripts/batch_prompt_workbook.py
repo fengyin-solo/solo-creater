@@ -489,10 +489,6 @@ def main() -> None:
             raise SystemExit("accept requires --result")
         if args.repo_url is None:
             raise SystemExit("accept requires --repo-url")
-        if args.commit_id is None:
-            raise SystemExit("accept requires --commit-id")
-        if args.trae_session_id is None:
-            raise SystemExit("accept requires --trae-session-id")
         result = accept(
             parent,
             args.workbook,
@@ -500,8 +496,8 @@ def main() -> None:
             args.result,
             args.dissatisfaction or "",
             args.repo_url,
-            args.commit_id,
-            args.trae_session_id,
+            args.commit_id or "",
+            args.trae_session_id or "",
             args.prompt_type or "主提示词",
             args.prompt,
             args.note,
