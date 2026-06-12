@@ -13,7 +13,22 @@ from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
 
-HEADERS = ["子文件夹名称", "任务类型", "编号", "提示词", "状态", "备注", "更新时间"]
+HEADERS = [
+    "子文件夹名称",
+    "任务类型",
+    "编号",
+    "提示词",
+    "提示词类型",
+    "状态",
+    "备注",
+    "验收结果",
+    "不满意原因",
+    "验收Repo URL",
+    "验收Commit ID",
+    "验收Trae Session ID",
+    "验收时间",
+    "更新时间",
+]
 DEFAULT_WORKBOOK = "solo-create-prompts.xlsx"
 NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
@@ -113,12 +128,12 @@ def read_workbook(path: Path) -> list[dict[str, str]]:
     for values in rows[1:]:
         record = {header: values[i] if i < len(values) else "" for i, header in enumerate(headers)}
         if any(record.values()):
-            records.append({header: record.get(header, "") for header in HEADERS})
+            records.append(normalize_record(record))
     return records
 
 
 def write_workbook(path: Path, records: list[dict[str, str]]) -> None:
-    rows = [HEADERS] + [[record.get(header, "") for header in HEADERS] for record in records]
+    rows = [HEADERS] + [[normalize_record(record).get(header, "") for header in HEADERS] for record in records]
     sheet_rows = []
     for row_index, values in enumerate(rows, start=1):
         cells = []
@@ -130,7 +145,7 @@ def write_workbook(path: Path, records: list[dict[str, str]]) -> None:
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-<cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="14" customWidth="1"/><col min="4" max="4" width="90" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/></cols>
+<cols><col min="1" max="1" width="34" customWidth="1"/><col min="2" max="3" width="14" customWidth="1"/><col min="4" max="4" width="90" customWidth="1"/><col min="5" max="7" width="18" customWidth="1"/><col min="8" max="8" width="40" customWidth="1"/><col min="9" max="13" width="24" customWidth="1"/><col min="14" max="14" width="20" customWidth="1"/></cols>
 <sheetData>{''.join(sheet_rows)}</sheetData>
 </worksheet>'''
     files = {
@@ -180,6 +195,39 @@ def workbook_path(parent: Path, workbook: str | None) -> Path:
     return parent / (workbook or DEFAULT_WORKBOOK)
 
 
+def normalize_record(record: dict[str, str]) -> dict[str, str]:
+    prompt = record.get("提示词", "").strip()
+    prompt_type = record.get("提示词类型", "").strip()
+    if not prompt_type and prompt:
+        prompt_type = "主提示词"
+    normalized = {header: "" for header in HEADERS}
+    for header in HEADERS:
+        if header == "提示词类型":
+            normalized[header] = prompt_type
+            continue
+        normalized[header] = record.get(header, "")
+    return normalized
+
+
+def blank_record(parsed: dict[str, str]) -> dict[str, str]:
+    return {
+        "子文件夹名称": parsed["folder"],
+        "任务类型": parsed["task_type"],
+        "编号": parsed["number"],
+        "提示词": "",
+        "提示词类型": "",
+        "状态": "待生成",
+        "备注": "",
+        "验收结果": "",
+        "不满意原因": "",
+        "验收Repo URL": "",
+        "验收Commit ID": "",
+        "验收Trae Session ID": "",
+        "验收时间": "",
+        "更新时间": "",
+    }
+
+
 def scan(parent: Path, workbook: str | None) -> dict[str, object]:
     path = workbook_path(parent, workbook)
     records = read_workbook(path)
@@ -200,17 +248,7 @@ def scan(parent: Path, workbook: str | None) -> dict[str, object]:
         else:
             pending.append(parsed)
             if not existing:
-                records.append(
-                    {
-                        "子文件夹名称": child.name,
-                        "任务类型": parsed["task_type"],
-                        "编号": parsed["number"],
-                        "提示词": "",
-                        "状态": "待生成",
-                        "备注": "",
-                        "更新时间": "",
-                    }
-                )
+                records.append(blank_record(parsed))
     write_workbook(path, records)
     return {
         "workbook": str(path),
@@ -229,6 +267,7 @@ def update(
     prompt: str | None,
     note: str,
     status: str | None,
+    prompt_type: str | None,
 ) -> dict[str, str]:
     parsed = parse_folder_name(folder)
     if not parsed:
@@ -238,10 +277,11 @@ def update(
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = None
     for index, record in enumerate(records):
-        if record.get("子文件夹名称") == folder:
+        if record.get("子文件夹名称") == folder and record.get("提示词类型", "主提示词") != "修复提示词":
             row = record
             if prompt is not None:
                 row["提示词"] = prompt
+                row["提示词类型"] = prompt_type or row.get("提示词类型") or "主提示词"
             if status is not None:
                 row["状态"] = status
             elif prompt is not None:
@@ -252,18 +292,93 @@ def update(
             records[index] = row
             break
     if row is None:
-        row = {
-            "子文件夹名称": folder,
-            "任务类型": parsed["task_type"],
-            "编号": parsed["number"],
-            "提示词": prompt or "",
-            "状态": status or ("已生成" if prompt else "待生成"),
-            "备注": note,
-            "更新时间": now,
-        }
+        row = blank_record(parsed)
+        row["提示词"] = prompt or ""
+        row["提示词类型"] = prompt_type or ("主提示词" if prompt else "")
+        row["状态"] = status or ("已生成" if prompt else "待生成")
+        row["备注"] = note
+        row["更新时间"] = now
         records.append(row)
     write_workbook(path, records)
     return {"workbook": str(path), "folder": folder, "status": row["状态"]}
+
+
+def accept(
+    parent: Path,
+    workbook: str | None,
+    folder: str,
+    result: str,
+    dissatisfaction: str,
+    repo_url: str,
+    commit_id: str,
+    trae_session_id: str,
+    prompt_type: str,
+    prompt: str | None,
+    note: str,
+) -> dict[str, str]:
+    parsed = parse_folder_name(folder)
+    if not parsed:
+        raise SystemExit(f"Cannot parse folder name: {folder}")
+    path = workbook_path(parent, workbook)
+    records = read_workbook(path)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = None
+    if prompt_type == "修复提示词":
+        if not prompt:
+            raise SystemExit("accept with 修复提示词 requires --prompt")
+        insert_at = None
+        for index, record in enumerate(records):
+            if record.get("子文件夹名称") == folder:
+                insert_at = index + 1
+        row = blank_record(parsed)
+        row["提示词"] = prompt
+        row["提示词类型"] = "修复提示词"
+        row["状态"] = "已发送"
+        row["验收结果"] = result
+        row["不满意原因"] = dissatisfaction
+        row["验收Repo URL"] = repo_url
+        row["验收Commit ID"] = commit_id
+        row["验收Trae Session ID"] = trae_session_id
+        row["验收时间"] = now
+        row["备注"] = note
+        row["更新时间"] = now
+        if insert_at is None:
+            records.append(row)
+        else:
+            records.insert(insert_at, row)
+    else:
+        for index, record in enumerate(records):
+            if record.get("子文件夹名称") != folder:
+                continue
+            if record.get("提示词类型", "主提示词") == "修复提示词":
+                continue
+            row = record
+            row["提示词类型"] = row.get("提示词类型") or "主提示词"
+            row["验收结果"] = result
+            row["不满意原因"] = dissatisfaction
+            row["验收Repo URL"] = repo_url
+            row["验收Commit ID"] = commit_id
+            row["验收Trae Session ID"] = trae_session_id
+            row["验收时间"] = now
+            if note:
+                row["备注"] = note
+            row["更新时间"] = now
+            records[index] = row
+            break
+        if row is None:
+            row = blank_record(parsed)
+            row["提示词类型"] = "主提示词"
+            row["验收结果"] = result
+            row["不满意原因"] = dissatisfaction
+            row["验收Repo URL"] = repo_url
+            row["验收Commit ID"] = commit_id
+            row["验收Trae Session ID"] = trae_session_id
+            row["验收时间"] = now
+            row["备注"] = note
+            row["更新时间"] = now
+            records.append(row)
+    write_workbook(path, records)
+    return {"workbook": str(path), "folder": folder, "acceptance_result": row["验收结果"]}
 
 
 def parse_number_range(value: str | None) -> tuple[int, int] | None:
@@ -290,7 +405,10 @@ def pick(parent: Path, workbook: str | None, number_range: str | None, limit: in
     for record in records:
         prompt = record.get("提示词", "").strip()
         number_text = record.get("编号", "").strip()
+        prompt_type = record.get("提示词类型", "主提示词").strip() or "主提示词"
         if not prompt or not number_text.isdigit():
+            continue
+        if prompt_type != "主提示词":
             continue
         number = int(number_text)
         if parsed_range and not (parsed_range[0] <= number <= parsed_range[1]):
@@ -315,7 +433,7 @@ def locate_project(project: Path, workbook: str | None) -> dict[str, object]:
         if not path.exists():
             continue
         records = read_workbook(path)
-        for record in records:
+        for record in reversed(records):
             folder = record.get("子文件夹名称")
             for candidate in project_candidates:
                 if candidate.name == folder:
@@ -332,14 +450,20 @@ def locate_project(project: Path, workbook: str | None) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["scan", "update", "pick", "locate-project"])
+    parser.add_argument("command", choices=["scan", "update", "accept", "pick", "locate-project"])
     parser.add_argument("--parent")
     parser.add_argument("--project")
     parser.add_argument("--workbook")
     parser.add_argument("--folder")
     parser.add_argument("--prompt")
+    parser.add_argument("--prompt-type")
     parser.add_argument("--note", default="")
     parser.add_argument("--status")
+    parser.add_argument("--result")
+    parser.add_argument("--dissatisfaction")
+    parser.add_argument("--repo-url")
+    parser.add_argument("--commit-id")
+    parser.add_argument("--trae-session-id")
     parser.add_argument("--range")
     parser.add_argument("--limit", type=int)
     args = parser.parse_args()
@@ -357,7 +481,31 @@ def main() -> None:
     elif args.command == "update":
         if not args.folder:
             raise SystemExit("update requires --folder")
-        result = update(parent, args.workbook, args.folder, args.prompt, args.note, args.status)
+        result = update(parent, args.workbook, args.folder, args.prompt, args.note, args.status, args.prompt_type)
+    elif args.command == "accept":
+        if not args.folder:
+            raise SystemExit("accept requires --folder")
+        if not args.result:
+            raise SystemExit("accept requires --result")
+        if args.repo_url is None:
+            raise SystemExit("accept requires --repo-url")
+        if args.commit_id is None:
+            raise SystemExit("accept requires --commit-id")
+        if args.trae_session_id is None:
+            raise SystemExit("accept requires --trae-session-id")
+        result = accept(
+            parent,
+            args.workbook,
+            args.folder,
+            args.result,
+            args.dissatisfaction or "",
+            args.repo_url,
+            args.commit_id,
+            args.trae_session_id,
+            args.prompt_type or "主提示词",
+            args.prompt,
+            args.note,
+        )
     else:
         result = pick(parent, args.workbook, args.range, args.limit)
     print(json.dumps(result, ensure_ascii=False, indent=2))

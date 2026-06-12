@@ -122,7 +122,7 @@ def main() -> None:
                 focus_project_window(project_path.name)
                 copy_to_clipboard(prompt)
                 submit_clipboard_to_trae(project_path.name, args.before_enter_delay, args.after_enter_delay)
-                update(parent, args.workbook, folder, None, "已自动发送到 Trae", "已发送")
+                update(parent, args.workbook, folder, None, "已自动发送到 Trae", "已发送", None)
             sent.append(folder)
         except Exception as exc:  # noqa: BLE001
             failed.append({"folder": folder, "error": str(exc)})
