@@ -63,6 +63,7 @@
   "scope": "single_project" | "parent_batch",
   "phase": "route_selection" | "generation" | "delivery" | "acceptance" | "final_output",
   "is_acceptance": true | false,
+  "browser_policy": "prefer_browser_allow_chrome_fallback" | "browser_only",
   "has_trae_session_id": true | false,
   "trae_session_id": "<当前上下文中的有效原始值>" | "",
   "acceptance_mode": "with_session_commit" | "without_session_review",
@@ -75,6 +76,8 @@
 - `route` 必须取 6 个合法 route 之一。
 - `scope` 只能是 `single_project` 或 `parent_batch`。
 - `phase` 只能取上面 5 个值，不要自造“review”“retry”之类的新阶段名。
+- `browser_policy=prefer_browser_allow_chrome_fallback` 表示默认策略：优先 `@浏览器`，不可用时先降级 `@chrome`，只有 `@chrome` 也不可用时才允许再降级 Safari。
+- `browser_policy=browser_only` 表示强制策略：只允许 `@浏览器`，不允许降级到 `@chrome` 或 Safari；如果当前线程未挂载 Browser 能力或 Browser 不可用，必须停止并要求切换到带 Browser 的新线程。
 - 首轮提示词场景时，`allowed_output_mode` 必须是 `prompt_only`。
 - `has_trae_session_id=true` 的前提是：来源为用户消息或当前上下文中的明确注入值，且格式匹配本文件 `0. Trae Session ID 格式`。
 - `acceptance_mode=with_session_commit` 表示当前验收允许走提交 / push / 输出 `Commit ID` 与 `Trae Session ID` 的链路。
@@ -140,6 +143,7 @@
   "commit_id": "<40位提交哈希>" | "无",
   "trae_session_id": "<当前上下文中的有效原始值>" | "",
   "prompt_text": "<本次验收对应提示词>",
+  "modified_file_count": <整数>,
   "completion": "已完成" | "未完成" | "暂时无法判定完成",
   "acceptance_mode": "with_session_commit" | "without_session_review",
   "needs_dissatisfaction": true | false,
@@ -153,6 +157,8 @@
 - `completion=已完成` 时，`needs_dissatisfaction=false` 且 `needs_next_prompt=false`。
 - `completion!=已完成` 时，`needs_dissatisfaction=true` 且 `needs_next_prompt=true`。
 - `prompt_text` 必须对应当前这次验收的提示词；修复验收时不要回填首轮主提示词。
+- `modified_file_count` 必须是当前这次验收实际涉及的修改文件个数，按整数输出，最小值为 `0`。
+- `modified_file_count` 的统计口径必须前后一致：优先按当前工作区里围绕本次提示词的已修改文件集合统计；如果当前是 `带 Session 提交态` 且改动已经提交，也可以按本次被验收提交对应的文件集合统计，但最终输出只允许保留一个整数值。
 - `acceptance_mode=with_session_commit` 时，`trae_session_id` 必须是当前上下文里的有效原始值，且来源必须是用户消息或明确注入值。
 - `acceptance_mode=with_session_commit` 时，`trae_session_id` 还必须与本次 `git commit` message 以及最终输出里的 `Trae Session ID` 字段完全一致。
 - `acceptance_mode=without_session_review` 时，`trae_session_id` 必须为空字符串，`commit_id` 允许为 `无`，且不要进入提交 / push 链路。
@@ -196,6 +202,7 @@ acceptance_output = {
   "Commit ID": "<40位提交哈希>" | "无" | null,
   "Trae Session ID": "<当前上下文中的有效原始值>" | null,
   "提示词": "<当前验收对应提示词>",
+  "修改文件个数": <整数>,
   "任务完成情况": "已完成。" | "未完成。" | "暂时无法判定完成。",
   "不满意原因": {
     "过程不满意": "...",
@@ -210,6 +217,7 @@ acceptance_output = {
 - `prompt_only_output` 只用于首轮提示词场景。
 - `acceptance_output` 只用于后续修复提示词或验收场景。
 - 命中 `Hard Stops` 的 `2.6` 时，只在 `acceptance_mode=with_session_commit` 下不能输出 `acceptance_output`；必须先告知 push / remote 问题。
+- `修改文件个数` 必须紧跟在 `提示词` 后面输出。
 - `任务完成情况` 必须带句号，并且只允许 3 个固定值。
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段必须原样输出通过格式校验的原始值，不要截断，不要改写。
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段还必须与当前有效原始值、以及本次 `git commit` message 完全一致。
