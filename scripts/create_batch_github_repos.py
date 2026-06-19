@@ -21,11 +21,15 @@ class TaskSpec:
     count: int
 
 
-COMMON_GH_PATHS = (
-    "/Users/fengyin/.local/go/bin/gh",
-    "/opt/homebrew/bin/gh",
-    "/usr/local/bin/gh",
-    "/usr/bin/gh",
+COMMON_GH_PATHS = tuple(
+    str(path)
+    for path in (
+        Path.home() / ".local" / "bin" / "gh",
+        Path.home() / ".local" / "go" / "bin" / "gh",
+        Path("/opt/homebrew/bin/gh"),
+        Path("/usr/local/bin/gh"),
+        Path("/usr/bin/gh"),
+    )
 )
 
 

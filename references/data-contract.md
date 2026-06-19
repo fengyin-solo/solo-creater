@@ -188,7 +188,7 @@
 - `过程不满意`、`产物不满意` 和 `下一轮提示词` 的最终文本都必须是中文自然描述，不能出现文件路径、文件名、函数名、变量名、接口名、配置名、命令名、英文工具名、英文单词或原始代码符号；技术证据只允许作为传给 `$solo-dissatisfaction` 的内部输入，由其转换成中文功能描述。
 - `产物不满意` 不能只写 `效果不好`、`不行`、`一般`、`代码有 bug`、`没完成任务` 这类笼统表面症状。
 - `过程不满意`、`产物不满意` 不能互相改写。
-- `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须由 `$solo-dissatisfaction` 生成，并通过 `/Users/fengyin/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 校验后才能进入最终输出。
+- `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须由 `$solo-dissatisfaction` 生成，并通过 `/Users/zhuanzmima0000/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 校验后才能进入最终输出。
 
 ## 6. 最终输出块 `final_output`
 
