@@ -216,6 +216,33 @@ def blank_record(parsed: dict[str, str]) -> dict[str, str]:
     }
 
 
+def record_number(record: dict[str, str]) -> int:
+    number = record.get("number") or record.get("编号") or ""
+    return int(number) if str(number).isdigit() else 0
+
+
+def sort_pending_for_batch_generation(pending: list[dict[str, str]]) -> list[dict[str, str]]:
+    by_type: dict[str, list[dict[str, str]]] = {}
+    for item in pending:
+        by_type.setdefault(item.get("task_type", ""), []).append(item)
+    for items in by_type.values():
+        items.sort(key=record_number)
+
+    ordered: list[dict[str, str]] = []
+    primary_types = ["代码生成", "功能迭代"]
+    while any(by_type.get(task_type) for task_type in primary_types):
+        for task_type in primary_types:
+            items = by_type.get(task_type, [])
+            if not items:
+                continue
+            ordered.extend(items[:5])
+            del items[:5]
+
+    for task_type in sorted(task_type for task_type in by_type if task_type not in primary_types):
+        ordered.extend(by_type[task_type])
+    return ordered
+
+
 def scan(parent: Path, workbook: str | None) -> dict[str, object]:
     path = workbook_path(parent, workbook)
     records = read_workbook(path)
@@ -237,6 +264,7 @@ def scan(parent: Path, workbook: str | None) -> dict[str, object]:
             pending.append(parsed)
             if not existing:
                 records.append(blank_record(parsed))
+    pending = sort_pending_for_batch_generation(pending)
     write_workbook(path, records)
     return {
         "workbook": str(path),

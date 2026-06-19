@@ -130,8 +130,9 @@
 - `提示词` 为空表示还没生成。
 - `提示词类型=主提示词` 表示首轮或主线提示词；`提示词类型=修复提示词` 表示只有在修复提示词真的进入验收时才追加的记录行。
 - `状态=已发送` 表示该行提示词已经投递到 Trae。
-- 进入验收后，不再往 Excel 写入任何验收结果、Repo URL、Commit ID、Trae Session ID、验收时间或不满意原因。
-- Excel 只用于定位提示词、记录提示词类型，以及生成 / 投递阶段的状态维护。
+- 进入验收后，不再往 `solo-create-prompts.xlsx` 写入任何验收结果、Repo URL、Commit ID、Trae Session ID、验收时间或不满意原因。
+- `solo-create-prompts.xlsx` 只用于定位提示词、记录提示词类型，以及生成 / 投递阶段的状态维护。
+- 验收结果必须通过 `$solo-acceptance-results` 写入项目目录父级的独立结果 Excel，默认文件名为 `solo-create-acceptance-results2.xlsx`。
 
 ## 4. 验收上下文 `acceptance_context`
 
@@ -162,6 +163,7 @@
 - `acceptance_mode=with_session_commit` 时，`trae_session_id` 必须是当前上下文里的有效原始值，且来源必须是用户消息或明确注入值。
 - `acceptance_mode=with_session_commit` 时，`trae_session_id` 还必须与本次 `git commit` message 以及最终输出里的 `Trae Session ID` 字段完全一致。
 - `acceptance_mode=without_session_review` 时，`trae_session_id` 必须为空字符串，`commit_id` 允许为 `无`，且不要进入提交 / push 链路。
+- `repo_url` 必须规范化为不带 `.git` 后缀的 GitHub HTTPS 页面 URL，格式为 `https://github.com/owner/repo`；无法取得时才写 `无`。
 - 如果存在 push / remote 阻塞且当前无法恢复正常推送，只在 `acceptance_mode=with_session_commit` 下阻塞 `acceptance_output`。
 
 ## 5. 不满意原因块 `dissatisfaction_block`
@@ -178,13 +180,15 @@
 - 只能有这两个 key。
 - 两个 value 都必须是单行文本。
 - `过程不满意` 不能写英文文案问题。
-- `产物不满意` 无法判断时固定写 `暂没法判断。`
+- `产物不满意` 无法判断时也必须写 30 个字以上，说明当前缺少用户可见证据；不要使用短句 `暂没法判断。`
 - 两个 value 都必须至少 30 个字，并以标点结尾。
-- `过程不满意` 必须同时具备 `触发节点`、`实际行为`、`业务影响`。
-- `过程不满意` 必须落在模型行为评价或更深一层根因，不能只是代码现象平移。
-- `产物不满意` 只能写用户可见现象、客观证据或需求缺口。
-- `产物不满意` 不允许出现工具、端口、浏览器、基线、git、push、remote、upstream 等背景信息。
+- `过程不满意` 必须同时具备具体环节 / 步骤 / 工具调用 / 文件改动、实际行为、证据和业务影响。
+- `过程不满意` 必须落在模型自身的指令遵循、规划、工具使用、幻觉、验证或纠错问题上，不能只是代码现象平移，也不能归因于环境 / 网络波动。
+- `产物不满意` 必须定位到具体功能、页面区域、交互、测试行为、配置行为或交付物，并写清客观证据或明确需求缺口。
+- `过程不满意`、`产物不满意` 和 `下一轮提示词` 的最终文本都必须是中文自然描述，不能出现文件路径、文件名、函数名、变量名、接口名、配置名、命令名、英文工具名、英文单词或原始代码符号；技术证据只允许作为传给 `$solo-dissatisfaction` 的内部输入，由其转换成中文功能描述。
+- `产物不满意` 不能只写 `效果不好`、`不行`、`一般`、`代码有 bug`、`没完成任务` 这类笼统表面症状。
 - `过程不满意`、`产物不满意` 不能互相改写。
+- `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须由 `$solo-dissatisfaction` 生成，并通过 `/Users/fengyin/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 校验后才能进入最终输出。
 
 ## 6. 最终输出块 `final_output`
 
@@ -222,3 +226,39 @@ acceptance_output = {
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段必须原样输出通过格式校验的原始值，不要截断，不要改写。
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段还必须与当前有效原始值、以及本次 `git commit` message 完全一致。
 - `acceptance_mode=without_session_review` 时，最终输出里不要展示 `Commit ID` 和 `Trae Session ID`。
+- `Repo URL` 必须规范化为不带 `.git` 后缀的 GitHub HTTPS 页面 URL，格式为 `https://github.com/owner/repo`。
+
+## 7. 验收结果 Excel 行 `acceptance_result_row`
+
+只要输出 `acceptance_output`，就必须在最终回复前通过 `$solo-acceptance-results` 把同一份验收结果回填到独立结果 Excel。该行按下面格式理解：
+
+```text
+{
+  "Repo ID": "ybl-<数字编号>-<序号>",
+  "Trae Session ID": "<当前上下文中的有效原始值>" | "",
+  "提示词": "<当前验收对应提示词>",
+  "Repo URL": "https://github.com/owner/repo" | "无",
+  "Commit ID": "<40位提交哈希>" | "",
+  "任务类型": "0-1代码生成" | "Bug修复" | "Feature迭代" | "代码理解" | "代码重构" | "工程化",
+  "业务领域": "Web前端" | "<明确输入值>",
+  "修改范围": "跨模块多文件" | "<明确输入值>",
+  "任务难度": "困难" | "<明确输入值>",
+  "任务是否完成": "已完成" | "未完成" | "暂时无法判定完成",
+  "过程与产物是否满意": "满意" | "不满意",
+  "不满意原因": "过程不满意：...\n产物不满意：..." | ""
+}
+```
+
+字段约束：
+
+- 结果 Excel 与 `solo-create-prompts.xlsx` 必须分离。
+- 结果 Excel 默认放在项目目录父级，默认文件名为 `solo-create-acceptance-results2.xlsx`。
+- 如果结果 Excel 不存在，第一次回填时必须新建。
+- 结果 Excel 的 sheet 名必须是 `prompts`。
+- 表头必须严格是这 12 列，顺序不能改：`Repo ID`、`Trae Session ID`、`提示词`、`Repo URL`、`Commit ID`、`任务类型`、`业务领域`、`修改范围`、`任务难度`、`任务是否完成`、`过程与产物是否满意`、`不满意原因`。
+- `Repo ID` 必须匹配 `^ybl-[0-9]+-[0-9]+$`；如果无法从当前项目目录名解析出标准值，必须显式传入标准 `repo_id`，禁止把目录名或非标准编号写入结果 Excel。
+- `acceptance_mode=without_session_review` 时，最终聊天输出不展示 `Commit ID` 和 `Trae Session ID`，但回填 Excel 时这两列必须存在，值写空字符串。
+- `Repo URL` 必须与最终聊天输出一致，写入前也必须规范化为不带 `.git` 后缀的 GitHub HTTPS 页面 URL。
+- `completion=已完成` 时，`过程与产物是否满意=满意`，`不满意原因` 为空。
+- `completion!=已完成` 时，`过程与产物是否满意=不满意`，`不满意原因` 只包含 `过程不满意` 和 `产物不满意`，不要写入 `下一轮提示词`；回填输入必须额外携带 `next_prompt`、`process_evidence` 或 `process_trace_evidence`、`product_evidence` 或 `artifact_evidence`、`model_fault_basis`、`environment_issue_excluded=true`，供回填脚本再次运行 `$solo-dissatisfaction` 校验。
+- `$solo-acceptance-results` 返回 `ok: true` 后，才允许结束验收流程。

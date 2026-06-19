@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -18,6 +19,14 @@ from pathlib import Path
 class TaskSpec:
     slug: str
     count: int
+
+
+COMMON_GH_PATHS = (
+    "/Users/fengyin/.local/go/bin/gh",
+    "/opt/homebrew/bin/gh",
+    "/usr/local/bin/gh",
+    "/usr/bin/gh",
+)
 
 
 def run_command(
@@ -46,10 +55,29 @@ def require_command(name: str) -> None:
 
 
 def resolve_gh_bin(value: str) -> str:
-    gh_bin = value or shutil.which("gh") or ""
-    if not gh_bin:
-        raise SystemExit("Missing required command: gh")
-    return gh_bin
+    if value:
+        explicit = Path(value).expanduser()
+        if explicit.is_file() and os.access(explicit, os.X_OK):
+            return str(explicit)
+        raise SystemExit(f"Configured --gh-bin is not an executable file: {explicit}")
+
+    candidates = []
+    path_gh = shutil.which("gh")
+    if path_gh:
+        candidates.append(path_gh)
+    candidates.extend(COMMON_GH_PATHS)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        gh_path = Path(candidate).expanduser()
+        if gh_path.is_file() and os.access(gh_path, os.X_OK):
+            return str(gh_path)
+
+    searched = ", ".join(candidates) if candidates else "PATH"
+    raise SystemExit(f"Missing required command: gh. Searched: {searched}")
 
 
 def ensure_official_gh(gh_bin: str) -> None:
@@ -62,8 +90,11 @@ def ensure_official_gh(gh_bin: str) -> None:
         "Create a new GitHub repository",
     )
     if "gh version" not in version_text or not any(marker in help_text for marker in valid_help_markers):
+        version_first_line = (version_text.strip().splitlines() or ["<empty version output>"])[0]
+        help_first_line = (help_text.strip().splitlines() or ["<empty repo create help output>"])[0]
         raise SystemExit(
             "The configured gh command does not look like the official GitHub CLI. "
+            f"path={gh_bin!r}; version={version_first_line!r}; repo_create_help={help_first_line!r}. "
             "Install the official GitHub CLI or pass --gh-bin with its full path."
         )
 
@@ -186,10 +217,26 @@ def build_specs(args: argparse.Namespace) -> list[TaskSpec]:
 def planned_repos(source_number: str, specs: list[TaskSpec]) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     sequence = 1
+    remaining = {spec.slug: spec.count for spec in specs}
+    type_indices = {spec.slug: 0 for spec in specs}
+    primary_slugs = ["codegen", "feature"]
+
+    while any(remaining.get(slug, 0) > 0 for slug in primary_slugs):
+        for slug in primary_slugs:
+            for _ in range(min(5, remaining.get(slug, 0))):
+                type_indices[slug] += 1
+                name = f"{source_number}-{slug}-{sequence}"
+                items.append({"name": name, "task_slug": slug, "index": sequence, "type_index": type_indices[slug]})
+                sequence += 1
+                remaining[slug] -= 1
+
     for spec in specs:
-        for type_index in range(1, spec.count + 1):
+        if spec.slug in primary_slugs:
+            continue
+        for _ in range(remaining.get(spec.slug, 0)):
+            type_indices[spec.slug] += 1
             name = f"{source_number}-{spec.slug}-{sequence}"
-            items.append({"name": name, "task_slug": spec.slug, "index": sequence, "type_index": type_index})
+            items.append({"name": name, "task_slug": spec.slug, "index": sequence, "type_index": type_indices[spec.slug]})
             sequence += 1
     return items
 
