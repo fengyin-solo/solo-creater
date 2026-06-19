@@ -742,6 +742,13 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - `带 Session 提交态` 下，必须核对“当前有效 `Trae Session ID` = `git commit` message = 最终质检结论里的 `【Trae Session ID】`”；三者任一不一致，都不能继续给最终验收结论。
 - `带 Session 提交态` 下，如果已经有同 message 的提交，但工作区里还有围绕当前提示词的新改动，默认先确认是否允许 amend；用户没有明确允许 amend 时，不要跳过“提交并 push”动作。
 - `带 Session 提交态` 下，执行 `git push` 时不要只试 1 次；如果首次失败、超时、长时间无返回或出现可恢复的网络抖动，必须至少自动重试 1 次，最多重试 2 次，并记录每次失败信息。
+- `带 Session 提交态` 下，`git push` 成功后不能直接结束；必须立刻做一次远端复验，确认远端最新提交就是当前准备输出的这次提交。
+- push 后复验至少要同时核对：
+  - `git rev-parse HEAD`
+  - `git ls-remote origin <当前分支>`
+  - 必要时再用 `git rev-parse origin/<当前分支>` 或等价只读命令确认本地跟踪分支已同步到同一个提交
+- 只有当“本地 `HEAD` = 远端目标分支最新提交 = 准备写入最终输出和 Excel 的 `Commit ID`”三者完全一致时，才允许继续输出验收结论。
+- 如果 push 返回成功，但复验发现远端最新提交不是当前本地 `HEAD`，或拿到的 `Commit ID` 不是远端最新提交，立即停止最终输出，先重新同步并修正 `Commit ID`，不要带着错误值继续回填或回复用户。
 - 只有连续重试后仍然失败，或已经确认是权限、upstream、远端不可达这类当前无法自行恢复的问题时，才允许命中 `2.6`。
 - 如果当前是 `无 Session 只验收态`，一定不能执行 `git commit`、`git push`、`git amend`，也不要因为工作区有改动就强行补提交流程。
 - `Repo URL` 必须取当前仓库远端 `origin` 对应的 GitHub 仓库地址，统一规范化为 `https://github.com/owner/repo`，只输出最终 URL 本体，禁止带 `.git` 后缀。
@@ -1113,6 +1120,7 @@ https://github.com/owner/repo
 - `修改文件个数` 是否已经统计完成，且是否紧跟在 `【提示词】` 后面输出。
 - 如果输出了 `下一轮提示词`，它是否以 `修复` 开头。
 - 如果当前是 `带 Session 提交态`，验收输出里的 `Repo URL`、`Commit ID`、`Trae Session ID`、`提示词`、`修改文件个数` 是否都对应当前这次验收。
+- 如果当前是 `带 Session 提交态`，`git push` 之后是否已经做过远端复验，且“本地 `HEAD`、远端目标分支最新提交、最终输出里的 `Commit ID`、回填 Excel 使用的 `Commit ID`”四者完全一致。
 - 验收输出和 `$solo-acceptance-results` 回填 Excel 的 `Repo URL` 是否都已经规范化为不带 `.git` 后缀的 GitHub HTTPS 页面 URL。
 - 如果当前是 `无 Session 只验收态`，最终输出是否已经去掉 `Commit ID` 和 `Trae Session ID`。
 - 如果当前是修复轮次验收，`【提示词】` 是否已经切换为当前修复提示词，而不是首轮提示词。
