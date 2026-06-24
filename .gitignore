@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+.venv/
+venv/
+.env
+.env.*
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*~
+
+# 本地运行时数据（脚本自动创建，每人不同）
+data/prompt_history.jsonl
+data/trae_open_state.json
+
+# 批量出题产物（通常写在父目录，此处防误提交）
+solo-create-prompts.xlsx
+*.xlsx
