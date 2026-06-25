@@ -164,9 +164,13 @@ def clean_https_remote(full_name: str) -> str:
     return f"https://github.com/{full_name}.git"
 
 
+def clean_ssh_remote(full_name: str) -> str:
+    return f"git@github.com:{full_name}.git"
+
+
 def configure_clean_origin(target: Path, full_name: str) -> None:
     run_command(["git", "remote", "remove", "origin"], cwd=target)
-    run_command(["git", "remote", "add", "origin", clean_https_remote(full_name)], cwd=target, check=True)
+    run_command(["git", "remote", "add", "origin", clean_ssh_remote(full_name)], cwd=target, check=True)
 
 
 def configure_clean_tracking(target: Path, branch: str) -> None:
@@ -176,7 +180,8 @@ def configure_clean_tracking(target: Path, branch: str) -> None:
 
 
 def push_initial_commit(gh_bin: str, target: Path, full_name: str, branch: str) -> None:
-    configure_clean_origin(target, full_name)
+    run_command(["git", "remote", "remove", "origin"], cwd=target)
+    run_command(["git", "remote", "add", "origin", clean_https_remote(full_name)], cwd=target, check=True)
     token = run_command([gh_bin, "auth", "token"], check=True).stdout.strip()
     if not token:
         raise RuntimeError("gh auth token returned an empty token")
@@ -229,7 +234,8 @@ def planned_repos(source_number: str, specs: list[TaskSpec]) -> list[dict[str, o
         for slug in primary_slugs:
             for _ in range(min(5, remaining.get(slug, 0))):
                 type_indices[slug] += 1
-                name = f"{source_number}-{slug}-{sequence}"
+                repo_prefix = f"{source_number}{sequence:02d}"
+                name = f"{repo_prefix}-{slug}-{sequence}"
                 items.append({"name": name, "task_slug": slug, "index": sequence, "type_index": type_indices[slug]})
                 sequence += 1
                 remaining[slug] -= 1
@@ -239,7 +245,8 @@ def planned_repos(source_number: str, specs: list[TaskSpec]) -> list[dict[str, o
             continue
         for _ in range(remaining.get(spec.slug, 0)):
             type_indices[spec.slug] += 1
-            name = f"{source_number}-{spec.slug}-{sequence}"
+            repo_prefix = f"{source_number}{sequence:02d}"
+            name = f"{repo_prefix}-{spec.slug}-{sequence}"
             items.append({"name": name, "task_slug": spec.slug, "index": sequence, "type_index": type_indices[spec.slug]})
             sequence += 1
     return items

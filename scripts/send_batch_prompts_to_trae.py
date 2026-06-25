@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -15,12 +16,25 @@ from batch_prompt_workbook import pick, update
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 ENSURE_TRAE = SKILL_DIR / "scripts" / "ensure_trae_project_open.py"
-TRAE_APP = "Trae CN"
-TRAE_PROCESS = "TRAE CN"
+TRAE_APP_CANDIDATES = ("TRAE SOLO CN", "Trae CN", "Trae")
 
 
 def run_command(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, input=input_text, capture_output=True, text=True)
+
+
+def configured_trae_app() -> str:
+    override = os.environ.get("SOLO_CREATE_TRAE_APP", "").strip().removesuffix(".app")
+    if override:
+        return override
+    for app_name in TRAE_APP_CANDIDATES:
+        if (Path("/Applications") / f"{app_name}.app").exists() or (Path.home() / "Applications" / f"{app_name}.app").exists():
+            return app_name
+    return TRAE_APP_CANDIDATES[0]
+
+
+def configured_trae_process() -> str:
+    return os.environ.get("SOLO_CREATE_TRAE_PROCESS", "").strip() or configured_trae_app()
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -30,13 +44,15 @@ def copy_to_clipboard(text: str) -> None:
 
 
 def focus_project_window(project_name: str) -> None:
+    trae_app = configured_trae_app()
+    trae_process = configured_trae_process()
     script = f'''
 on run argv
   set projectName to item 1 of argv
-  tell application "{TRAE_APP}" to activate
+  tell application "{trae_app}" to activate
   delay 0.8
   tell application "System Events"
-    tell process "{TRAE_PROCESS}"
+    tell process "{trae_process}"
       set frontmost to true
       repeat with candidateWindow in windows
         if (name of candidateWindow contains projectName) then
@@ -62,14 +78,16 @@ end run
 
 
 def submit_clipboard_to_trae(project_name: str, before_enter_delay: float, after_enter_delay: float) -> None:
+    trae_app = configured_trae_app()
+    trae_process = configured_trae_process()
     script = f'''
 on run argv
   set projectName to item 1 of argv
   set beforeEnterDelay to item 2 of argv as real
-  tell application "{TRAE_APP}" to activate
+  tell application "{trae_app}" to activate
   delay 0.4
   tell application "System Events"
-    tell process "{TRAE_PROCESS}"
+    tell process "{trae_process}"
       set frontmost to true
       if (count of windows) = 0 then error "Trae 没有可用窗口"
       if (name of window 1 does not contain projectName) then error "前台窗口不是目标项目：" & name of window 1

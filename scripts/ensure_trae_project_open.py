@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -11,12 +12,26 @@ from prompt_history_lib import HISTORY_DIR
 
 
 STATE_FILE = HISTORY_DIR / "trae_open_state.json"
-TRAE_APP = "Trae CN.app"
-TRAE_PROCESS = "TRAE CN"
+TRAE_APP_CANDIDATES = ("TRAE SOLO CN.app", "Trae CN.app", "Trae.app")
+TRAE_PROCESS_CANDIDATES = ("TRAE SOLO CN", "TRAE CN", "Trae")
 
 
 def run_command(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True)
+
+
+def configured_trae_app() -> str:
+    override = os.environ.get("SOLO_CREATE_TRAE_APP", "").strip()
+    if override:
+        return override
+    for app_name in TRAE_APP_CANDIDATES:
+        if (Path("/Applications") / app_name).exists() or (Path.home() / "Applications" / app_name).exists():
+            return app_name
+    return TRAE_APP_CANDIDATES[0]
+
+
+def configured_trae_process() -> str:
+    return os.environ.get("SOLO_CREATE_TRAE_PROCESS", "").strip() or configured_trae_app().removesuffix(".app")
 
 
 def load_state() -> dict[str, str]:
@@ -37,8 +52,9 @@ def save_state(state: dict[str, str]) -> None:
 
 
 def get_window_titles() -> list[str]:
+    trae_process = configured_trae_process()
     script = (
-        f'tell application "System Events" to tell process "{TRAE_PROCESS}" '
+        f'tell application "System Events" to tell process "{trae_process}" '
         'to get name of every window'
     )
     result = run_command("osascript", "-e", script)
@@ -60,7 +76,7 @@ def is_project_open(project_path: Path, window_titles: list[str]) -> bool:
 
 
 def open_project(project_path: Path) -> None:
-    result = run_command("open", "-a", TRAE_APP, str(project_path))
+    result = run_command("open", "-a", configured_trae_app(), str(project_path))
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "打开 Trae 失败")
 

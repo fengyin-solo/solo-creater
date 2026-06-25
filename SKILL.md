@@ -58,7 +58,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 只要 route 是单项目流程，就必须先运行：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/ensure_trae_project_open.py --project-path .`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/ensure_trae_project_open.py --project-path .`
 
 这一步优先级高于扫仓库、记基线、查历史、读手册、启动项目和浏览器验收。不要后移，不要懒触发，不要省略。
 
@@ -66,7 +66,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 ### 0.4 核心数据格式
 
-除了流程顺序，核心数据也必须先匹配 [data-contract.md](/Users/zhuanzmima0000/.codex/skills/solo-creater/references/data-contract.md) 里的 schema，再进入 route 判断或最终输出。
+除了流程顺序，核心数据也必须先匹配 [data-contract.md](/Users/fengyin/.codex/skills/solo-creater/references/data-contract.md) 里的 schema，再进入 route 判断或最终输出。
 
 必须使用并遵守这 7 组数据对象：
 
@@ -88,7 +88,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - `$solo-dissatisfaction` 可以接收包含路径、文件名、函数名、命令名等技术细节的内部证据，但返回给最终验收模板的 `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须是中文自然描述，不得出现文件路径、英文单词或原始代码标识。
 - 生成最终验收模板后，必须使用 `$solo-acceptance-results`，并先满足 `acceptance_result_row` 的字段和结果 Excel 回填规则。
 - 最终返回给用户时，只允许输出 `final_output` 允许的形态。
-- 只要涉及 `Trae Session ID`，先按 [data-contract.md](/Users/zhuanzmima0000/.codex/skills/solo-creater/references/data-contract.md) 里的 `0. Trae Session ID 格式` 校验；不合法就按“未收到合法 Session ID”处理。
+- 只要涉及 `Trae Session ID`，先按 [data-contract.md](/Users/fengyin/.codex/skills/solo-creater/references/data-contract.md) 里的 `0. Trae Session ID 格式` 校验；不合法就按“未收到合法 Session ID”处理。
 - 只有本次验收明确走“带 Session 提交态”时，才检查 3 个环节完全一致：当前有效值、`git commit` message、最终质检结论输出值。
 
 如果本文件与 `data-contract.md` 的字段定义冲突，一律以 `data-contract.md` 为准。
@@ -103,7 +103,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 - 当前目录是单个工程。
 - 运行：
-  - `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
+  - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
 - 返回 `found: true`。
 - 记录里的 `提示词` 非空。
 
@@ -375,7 +375,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 ## 4. 总原则
 
 - 只要进入验收，默认先做结果验收。
-- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/6600021-codegen-2`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
+- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/66000201-codegen-1`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
 - 结果 Excel 与生成提示词 Excel 必须分离；默认结果文件名是 `solo-create-acceptance-results2.xlsx`，第一次不存在时由 `$solo-acceptance-results` 新建。
 - 验收默认目标是优先找出“未完成”的直接证据，不以替实现补理由，也不以凑出“已完成”结论为目标。
 - 只要是前端页面、前端交互、可视化结果、浏览器流程或用户能点到的链路，默认按“需要浏览器严格实操”处理；除非代码侧已经足以直接判 `未完成`。
@@ -425,7 +425,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 进入单工程目录后，先运行：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
 
 如果返回 `found: true`，且记录里 `提示词` 非空：
 
@@ -454,7 +454,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 3. 只读和当前切入点直接相关的文件。
 4. 判断任务类型；明确就直走，不明确才让用户选。
 5. 运行历史验重：
-   - `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
+   - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
 6. 按任务类型只读命中的一本手册，不要把全部手册都读一遍。
 7. 尝试记基线：
    - 优先运行仓库里的 `scripts/record_round_baseline.py`
@@ -463,7 +463,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 8. 生成符合“首轮提示词要求”的中文提示词。
 9. 执行输出级禁词检查。
 10. 记录提示词历史：
-    - `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --prompt "<最终提示词>"`
+    - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --prompt "<最终提示词>"`
 
 首轮去重规则必须执行：
 
@@ -477,6 +477,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 - 必须贴当前仓库。
 - 必须是用户可感知的问题或需求。
+- 默认按高难度目标出题；除非用户明确要求降低难度，否则不要回落到偏简单的小题。
 - 默认用中文。
 - 不要出现文件路径、函数名、类名、实现指挥。
 - 不要写成任何项目都能套用的通用模板。
@@ -535,7 +536,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 这条 route 的细则不再内联在本文件中，必须调用平级 skill：
 
 - `$solo-batch-repo-seed`
-- `/Users/zhuanzmima0000/.codex/skills/solo-batch-repo-seed/SKILL.md`
+- `/Users/fengyin/.codex/skills/solo-batch-repo-seed/SKILL.md`
 
 本 skill 在这条 route 里只负责：
 
@@ -545,7 +546,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 保留本文件 `2.4` 的 Hard Stop 优先级；如果源项目编号无法判定且用户没给 `--source-number`，先停，不要下发给子 skill。
 - 接收子 skill 返回的建仓结果摘要。
 - 建仓成功后继续进入 `批量首轮路`；默认先运行：
-  - `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py scan --parent "<父目录>"`
+  - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py scan --parent "<父目录>"`
 
 除了路由判定和结果衔接，本 skill 不再重复维护批量建仓的具体步骤、命名规则、dry-run、远端校验和失败修复细则；这些全部以下沉后的 `$solo-batch-repo-seed` 为准。
 
@@ -556,7 +557,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 这条 route 的细则不再内联在本文件中，必须调用平级 skill：
 
 - `$solo-batch-first-prompts`
-- `/Users/zhuanzmima0000/.codex/skills/solo-batch-first-prompts/SKILL.md`
+- `/Users/fengyin/.codex/skills/solo-batch-first-prompts/SKILL.md`
 
 本 skill 在这条 route 里只负责：
 
@@ -595,19 +596,19 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 按范围投递命令：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --range "22-27"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --range "22-27"`
 
 按数量投递命令：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --limit 6`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --limit 6`
 
 投递后核对命令：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py pick --parent "<父目录>" --range "<已投递编号范围>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py pick --parent "<父目录>" --range "<已投递编号范围>"`
 
 必要时补写状态：
 
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --status "已发送" --note "已自动发送到 Trae"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --status "已发送" --note "已自动发送到 Trae"`
 
 如果 Trae 没有聚焦聊天输入框，先停下并告诉用户需要把光标放进 Trae 聊天输入框后再重试；不要把提示词发送到不确定输入区域。
 
@@ -741,7 +742,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - `带 Session 提交态` 下，如果当前分支上还没有以该合法 `Trae Session ID` 为 message 的提交，先补提交再 push。
 - `带 Session 提交态` 下，必须核对“当前有效 `Trae Session ID` = `git commit` message = 最终质检结论里的 `【Trae Session ID】`”；三者任一不一致，都不能继续给最终验收结论。
 - `带 Session 提交态` 下，如果已经有同 message 的提交，但工作区里还有围绕当前提示词的新改动，默认先确认是否允许 amend；用户没有明确允许 amend 时，不要跳过“提交并 push”动作。
-- `带 Session 提交态` 下，执行 `git push` 时不要只试 1 次；如果首次失败、超时、长时间无返回或出现可恢复的网络抖动，必须至少自动重试 1 次，最多重试 2 次，并记录每次失败信息。
+- `带 Session 提交态` 下，执行 `git push` 时不要只试 1 次；如果首次失败、超时、长时间无返回或出现可恢复的网络抖动，必须至少自动重试 1 次，最多重试 3 次，并记录每次失败信息。
 - `带 Session 提交态` 下，`git push` 成功后不能直接结束；必须立刻做一次远端复验，确认远端最新提交就是当前准备输出的这次提交。
 - push 后复验至少要同时核对：
   - `git rev-parse HEAD`
@@ -753,6 +754,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 如果当前是 `无 Session 只验收态`，一定不能执行 `git commit`、`git push`、`git amend`，也不要因为工作区有改动就强行补提交流程。
 - `Repo URL` 必须取当前仓库远端 `origin` 对应的 GitHub 仓库地址，统一规范化为 `https://github.com/owner/repo`，只输出最终 URL 本体，禁止带 `.git` 后缀。
 - `带 Session 提交态` 下，`Commit ID` 必须填这个已 push 到远端的完整 40 位提交哈希。
+- `带 Session 提交态` 下，在通过 `$solo-acceptance-results` 回填结果 Excel 前，必须额外拼出 `Repo URL + /commit/ + Commit ID` 并访问该 commit 页面；如果返回 `404`，或没有落到对应 commit 页面，立即停止回填与最终输出。
 - `带 Session 提交态` 下，`Trae Session ID` 必须原样回填当前上下文里可用、且通过格式校验的原始值。
 - `无 Session 只验收态` 下，最终输出里不要展示 `Commit ID` 和 `Trae Session ID`。
 - 不管当前是哪种验收模式，最终输出前都必须统计“这次修改的文件个数”，并把它作为单独字段输出。
@@ -762,7 +764,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 如果当前是 `带 Session 提交态`，且因为远端不可达、权限不足、仓库未配置 upstream 或其他 push / remote 问题导致没法正常 push，立即命中 `2.6`；先告知用户问题并恢复正常推送，恢复前不要输出验收结果。
 - 如果当前是 `带 Session 提交态`，且当前仓库远端是 GitHub，默认优先保持或切换到 SSH 推送链路；只有用户明确要求保留 HTTPS 时，才继续使用 HTTPS 远端做提交态推送。
 - 只要没有命中 `2.6`，在最终验收模板发给用户前必须调用 `$solo-acceptance-results` 回填结果 Excel；回填不改变原有聊天输出字段，也不要在最终模板里新增 Excel 路径或回填状态。
-- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/6600021-codegen-2` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `$solo-acceptance-results` 文档里定义的标准表头一致。
+- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/66000201-codegen-1` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `$solo-acceptance-results` 文档里定义的标准表头一致。
 - 回填给 `$solo-acceptance-results` 的 `Repo ID` 必须是 `ybl-<数字编号>-<序号>` 标准格式；不能从项目目录名解析出标准值时，必须显式传入标准 `repo_id`，否则回填脚本会失败，禁止原样写入目录名。
 - 回填输入必须来自当前 `acceptance_context`、`final_output` 和 `$solo-dissatisfaction` 结果，不要重新改写验收结论。
 - 如果 `completion != 已完成`，回填输入还必须携带 `$solo-dissatisfaction` 校验所需的 `next_prompt`、过程证据、产物证据、模型自身责任依据和 `environment_issue_excluded=true`；回填脚本会再次运行校验，校验失败时禁止写入 Excel。
@@ -825,7 +827,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 这三项不再由本 skill 直接生成。必须使用平级 skill：
 
 - `$solo-dissatisfaction`
-- `/Users/zhuanzmima0000/.codex/skills/solo-dissatisfaction/SKILL.md`
+- `/Users/fengyin/.codex/skills/solo-dissatisfaction/SKILL.md`
 
 强制契约：
 
@@ -858,7 +860,7 @@ allowed_target_column: 批量改表时本次允许修改的列；单项目为空
 接收 `solo-dissatisfaction` 输出后，必须立即运行校验脚本：
 
 ```bash
-python3 /Users/zhuanzmima0000/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py --stdin
+python3 /Users/fengyin/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py --stdin
 ```
 
 校验输入必须是：
@@ -945,6 +947,10 @@ https://github.com/owner/repo
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
 ```
+【是否回填 Excel】
+```text
+是。
+```
 【任务完成情况】
 ```text
 已完成。
@@ -971,6 +977,10 @@ https://github.com/owner/repo
 【修改文件个数】
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
+```
+【是否回填 Excel】
+```text
+是。
 ```
 【任务完成情况】
 ```text
@@ -1008,6 +1018,10 @@ https://github.com/owner/repo
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
 ```
+【是否回填 Excel】
+```text
+是。
+```
 【任务完成情况】
 ```text
 暂时无法判定完成。
@@ -1036,6 +1050,10 @@ https://github.com/owner/repo
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
 ```
+【是否回填 Excel】
+```text
+是。
+```
 【任务完成情况】
 ```text
 已完成。
@@ -1054,6 +1072,10 @@ https://github.com/owner/repo
 【修改文件个数】
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
+```
+【是否回填 Excel】
+```text
+是。
 ```
 【任务完成情况】
 ```text
@@ -1082,6 +1104,10 @@ https://github.com/owner/repo
 【修改文件个数】
 ```text
 这次验收实际涉及的修改文件个数，输出整数。
+```
+【是否回填 Excel】
+```text
+是。
 ```
 【任务完成情况】
 ```text
@@ -1114,10 +1140,11 @@ https://github.com/owner/repo
 - `$solo-acceptance-results` 是否返回 `ok: true`，且写入文件不是生成提示词 Excel。
 - 输出级内容是否含有禁词。
 - 如果当前输出包含 `过程不满意`、`产物不满意` 或 `下一轮提示词`，三者是否确实由 `$solo-dissatisfaction` 生成，而不是在本 skill 内自行编写。
-- 如果当前输出包含 `过程不满意`、`产物不满意` 或 `下一轮提示词`，是否已经运行 `/Users/zhuanzmima0000/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 且返回 `ok: true`。
+- 如果当前输出包含 `过程不满意`、`产物不满意` 或 `下一轮提示词`，是否已经运行 `/Users/fengyin/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 且返回 `ok: true`。
 - 如果 `solo-dissatisfaction` 或校验脚本判定当前版本无效，是否已经整段废弃并重写，而不是只替换几个词继续沿用原句结构。
 - `过程不满意`、`产物不满意`、`提示词` 每行是否以标点结尾。
 - `修改文件个数` 是否已经统计完成，且是否紧跟在 `【提示词】` 后面输出。
+- `是否回填 Excel` 是否已经输出为 `是。`，且是否紧跟在 `【修改文件个数】` 后面。
 - 如果输出了 `下一轮提示词`，它是否以 `修复` 开头。
 - 如果当前是 `带 Session 提交态`，验收输出里的 `Repo URL`、`Commit ID`、`Trae Session ID`、`提示词`、`修改文件个数` 是否都对应当前这次验收。
 - 如果当前是 `带 Session 提交态`，`git push` 之后是否已经做过远端复验，且“本地 `HEAD`、远端目标分支最新提交、最终输出里的 `Commit ID`、回填 Excel 使用的 `Commit ID`”四者完全一致。
@@ -1150,8 +1177,8 @@ https://github.com/owner/repo
 
 - `scripts/record_round_baseline.py`
 - `scripts/compare_round_baseline.py`
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
-- `python3 /Users/zhuanzmima0000/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --prompt "<最终提示词>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --prompt "<最终提示词>"`
 
 ### 12.3 多项目并行
 

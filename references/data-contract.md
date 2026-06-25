@@ -188,7 +188,7 @@
 - `过程不满意`、`产物不满意` 和 `下一轮提示词` 的最终文本都必须是中文自然描述，不能出现文件路径、文件名、函数名、变量名、接口名、配置名、命令名、英文工具名、英文单词或原始代码符号；技术证据只允许作为传给 `$solo-dissatisfaction` 的内部输入，由其转换成中文功能描述。
 - `产物不满意` 不能只写 `效果不好`、`不行`、`一般`、`代码有 bug`、`没完成任务` 这类笼统表面症状。
 - `过程不满意`、`产物不满意` 不能互相改写。
-- `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须由 `$solo-dissatisfaction` 生成，并通过 `/Users/zhuanzmima0000/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 校验后才能进入最终输出。
+- `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须由 `$solo-dissatisfaction` 生成，并通过 `/Users/fengyin/.codex/skills/solo-dissatisfaction/scripts/validate_dissatisfaction.py` 校验后才能进入最终输出。
 
 ## 6. 最终输出块 `final_output`
 
@@ -207,6 +207,7 @@ acceptance_output = {
   "Trae Session ID": "<当前上下文中的有效原始值>" | null,
   "提示词": "<当前验收对应提示词>",
   "修改文件个数": <整数>,
+  "是否回填 Excel": "是。" | "否。",
   "任务完成情况": "已完成。" | "未完成。" | "暂时无法判定完成。",
   "不满意原因": {
     "过程不满意": "...",
@@ -222,6 +223,8 @@ acceptance_output = {
 - `acceptance_output` 只用于后续修复提示词或验收场景。
 - 命中 `Hard Stops` 的 `2.6` 时，只在 `acceptance_mode=with_session_commit` 下不能输出 `acceptance_output`；必须先告知 push / remote 问题。
 - `修改文件个数` 必须紧跟在 `提示词` 后面输出。
+- `是否回填 Excel` 必须紧跟在 `修改文件个数` 后面输出。
+- 只要最终允许输出 `acceptance_output`，并且 `$solo-acceptance-results` 已返回 `ok: true`，这里就必须写 `是。`；如果因为某个 `Hard Stop` 导致当前根本不能结束验收流程，则不要输出带 `否。` 的验收模板。
 - `任务完成情况` 必须带句号，并且只允许 3 个固定值。
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段必须原样输出通过格式校验的原始值，不要截断，不要改写。
 - `acceptance_mode=with_session_commit` 时，`Trae Session ID` 字段还必须与当前有效原始值、以及本次 `git commit` message 完全一致。
@@ -259,6 +262,8 @@ acceptance_output = {
 - `Repo ID` 必须匹配 `^ybl-[0-9]+-[0-9]+$`；如果无法从当前项目目录名解析出标准值，必须显式传入标准 `repo_id`，禁止把目录名或非标准编号写入结果 Excel。
 - `acceptance_mode=without_session_review` 时，最终聊天输出不展示 `Commit ID` 和 `Trae Session ID`，但回填 Excel 时这两列必须存在，值写空字符串。
 - `Repo URL` 必须与最终聊天输出一致，写入前也必须规范化为不带 `.git` 后缀的 GitHub HTTPS 页面 URL。
+- `Commit ID` 非空时，回填前必须额外拼出 `Repo URL + /commit/ + Commit ID` 作为 commit 页面地址并访问校验；如果返回 `404`，或没有落到对应 commit 页面，必须停止回填。
 - `completion=已完成` 时，`过程与产物是否满意=满意`，`不满意原因` 为空。
 - `completion!=已完成` 时，`过程与产物是否满意=不满意`，`不满意原因` 只包含 `过程不满意` 和 `产物不满意`，不要写入 `下一轮提示词`；回填输入必须额外携带 `next_prompt`、`process_evidence` 或 `process_trace_evidence`、`product_evidence` 或 `artifact_evidence`、`model_fault_basis`、`environment_issue_excluded=true`，供回填脚本再次运行 `$solo-dissatisfaction` 校验。
 - `$solo-acceptance-results` 返回 `ok: true` 后，才允许结束验收流程。
+- `$solo-acceptance-results` 返回 `ok: true` 后，最终聊天输出里的 `是否回填 Excel` 必须写 `是。`，不允许先输出验收模板再补回填状态。
