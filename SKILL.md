@@ -374,7 +374,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 ## 4. 总原则
 
 - 只要进入验收，默认先做结果验收。
-- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/6600021-codegen-2`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
+- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/66000212-codegen-2`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
 - 结果 Excel 与生成提示词 Excel 必须分离；默认结果文件名是 `solo-create-acceptance-results2.xlsx`，第一次不存在时由 `$solo-acceptance-results` 新建。
 - 验收默认目标是优先找出“未完成”的直接证据，不以替实现补理由，也不以凑出“已完成”结论为目标。
 - 只要是前端页面、前端交互、可视化结果、浏览器流程或用户能点到的链路，默认按“需要浏览器严格实操”处理；除非代码侧已经足以直接判 `未完成`。
@@ -556,15 +556,16 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 - 确认已经唯一命中 `批量首轮路`。
 - 如果父目录下还只有一个源仓库，且真实目标是先得到多个源码相同的 GitHub 仓库，强制回退到 `批量建仓路`，不要误进本路。
-- 把父目录、Excel 路径和默认自动投递数量等上下文收束后交给 `$solo-batch-first-prompts`。
+- 把父目录、Excel 路径和默认难度等上下文收束后交给 `$solo-batch-first-prompts`。
 - 批量生成时要求 `$solo-batch-first-prompts` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替处理；如果某一类 pending 不足 5 个，就处理该类剩余数量后继续切换，其他任务类型排在这两类之后。
 - 接收子 skill 返回的批量生成摘要。
-- 批量生成成功后，默认继续投递前 6 个已生成提示词；用户可明确改成其他数量。
+- 批量生成成功后，默认难度为高。
+- 批量生成成功后，不自动投递任何提示词，只提示用户按需手动运行批量投递。
 - 给用户的最终回复仍只简要说明：
   - Excel 位置。
   - 生成数量。
   - 跳过数量。
-  - 自动发送数量。
+  - 建议下一步。
   - 未处理原因。
 
 除了路由判定、前置分流和结果衔接，本 skill 不再重复维护子文件夹识别、Excel 断点续跑、批量去重、防撞规则和多文件联动要求；这些全部以下沉后的 `$solo-batch-first-prompts` 为准。
@@ -727,6 +728,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 验收结论里的 `【提示词】` 必须严格对应“当前这次实际被验收的提示词”，不能回填别的轮次内容。
 - 如果当前验收的是修复轮次结果，`【提示词】` 必须填写该次修复提示词，不能填写首轮提示词，也不能把首轮提示词和修复提示词拼在一起。
 - 如果一次会话里先有首轮提示词，后又生成过修复提示词，后续所有围绕修复结果的验收、提交核对和最终输出，都以最新那条有效修复提示词作为当前验收依据。
+- 如果当前进入修复轮次，必须先把该次修复提示词作为独立记录追加到提示词 Excel；禁止把修复提示词写回或覆盖原有主提示词记录。
 - 如果当前是 `带 Session 提交态`，且工作区里存在围绕当前提示词的改动，不管最终结论是 `已完成`、`未完成` 还是 `暂时无法判定完成`，都必须先用合法 `Trae Session ID` 提交一次，再尝试 push 到远程，然后再输出验收结论。
 - `带 Session 提交态` 下，用于 push 的提交 message 必须严格等于这个合法 `Trae Session ID`。
 - `带 Session 提交态` 下，如果当前分支上还没有以该合法 `Trae Session ID` 为 message 的提交，先补提交再 push。
@@ -743,9 +745,10 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 统计时不要把 `node_modules`、构建产物、日志、截图、临时文件或与本次提示词无关的环境文件混进来；只统计围绕这次提示词实际改动的源码、配置、样式、测试、脚本和文档文件。
 - 如果当前是 `带 Session 提交态`，且因为远端不可达、权限不足、仓库未配置 upstream 或其他 push / remote 问题导致没法正常 push，立即命中 `2.6`；先告知用户问题并恢复正常推送，恢复前不要输出验收结果。
 - 只要没有命中 `2.6`，在最终验收模板发给用户前必须调用 `$solo-acceptance-results` 回填结果 Excel；回填不改变原有聊天输出字段，也不要在最终模板里新增 Excel 路径或回填状态。
-- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/6600021-codegen-2` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `/Users/fengyin/项目/字节/solo/数据中转/solo-create-acceptance-results2.xlsx` 一致。
+- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/66000212-codegen-2` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `/Users/fengyin/项目/字节/solo/数据中转/solo-create-acceptance-results2.xlsx` 一致。
 - 回填给 `$solo-acceptance-results` 的 `Repo ID` 必须是 `ybl-<数字编号>-<序号>` 标准格式；不能从项目目录名解析出标准值时，必须显式传入标准 `repo_id`，否则回填脚本会失败，禁止原样写入目录名。
 - 回填输入必须来自当前 `acceptance_context`、`final_output` 和 `$solo-dissatisfaction` 结果，不要重新改写验收结论。
+- 如果当前是修复轮次验收，回填输入里的 `prompt_text` 必须是当前有效修复提示词，`task_type` 必须按修复轮次口径写入；结果 Excel 必须追加新的修复轮次记录，不能覆盖主轮次验收记录。
 - 如果 `completion != 已完成`，回填输入还必须携带 `$solo-dissatisfaction` 校验所需的 `next_prompt`、过程证据、产物证据、模型自身责任依据和 `environment_issue_excluded=true`；回填脚本会再次运行校验，校验失败时禁止写入 Excel。
 - 如果 `$solo-acceptance-results` 回填失败，先修复回填问题并重试；禁止改写到 `solo-create-prompts.xlsx`，禁止静默跳过回填后结束验收流程。
 
@@ -1105,6 +1108,8 @@ https://github.com/owner/repo
 - 如果当前是 `无 Session 只验收态`，最终输出是否已经去掉 `Commit ID` 和 `Trae Session ID`。
 - 如果当前是修复轮次验收，`【提示词】` 是否已经切换为当前修复提示词，而不是首轮提示词。
 - 如果当前已经有多条修复提示词，`【提示词】` 是否对应最新且当前有效的那一条。
+- 如果当前是修复轮次验收，是否已经确认提示词 Excel 追加了新的修复提示词记录，而不是复用主提示词记录。
+- 如果当前是修复轮次验收，结果 Excel 是否已经新增修复轮次验收记录，而不是覆盖主轮次验收记录。
 - 如果当前是 `带 Session 提交态`，用户输入的 `Trae Session ID`、`git commit` message、最终输出里的 `【Trae Session ID】` 是否完全一致。
 - 如果当前是 `无 Session 只验收态`，是否确实没有执行 `git commit`、`git push`、`git amend`。
 - `solo-dissatisfaction` 输入包是否已经包含过程轨迹证据、产物证据、未满足需求和模型自身责任依据，且没有凭空编造 Trae 过程或把环境 / 网络波动写成模型问题。

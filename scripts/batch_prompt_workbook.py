@@ -291,9 +291,34 @@ def update(
     path = workbook_path(parent, workbook)
     records = read_workbook(path)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    desired_prompt_type = (prompt_type or "").strip()
     row = None
-    for index, record in enumerate(records):
-        if record.get("子文件夹名称") == folder and record.get("提示词类型", "主提示词") != "修复提示词":
+    if desired_prompt_type == "修复提示词":
+        for index in range(len(records) - 1, -1, -1):
+            record = records[index]
+            if record.get("子文件夹名称") != folder:
+                continue
+            if (record.get("提示词类型", "主提示词").strip() or "主提示词") != "修复提示词":
+                continue
+            row = record
+            if prompt is not None:
+                row["提示词"] = prompt
+                row["提示词类型"] = "修复提示词"
+            if status is not None:
+                row["状态"] = status
+            elif prompt is not None:
+                row["状态"] = "已生成"
+            if note:
+                row["备注"] = note
+            row["更新时间"] = now
+            records[index] = row
+            break
+    else:
+        for index, record in enumerate(records):
+            if record.get("子文件夹名称") != folder:
+                continue
+            if (record.get("提示词类型", "主提示词").strip() or "主提示词") == "修复提示词":
+                continue
             row = record
             if prompt is not None:
                 row["提示词"] = prompt
@@ -310,7 +335,7 @@ def update(
     if row is None:
         row = blank_record(parsed)
         row["提示词"] = prompt or ""
-        row["提示词类型"] = prompt_type or ("主提示词" if prompt else "")
+        row["提示词类型"] = desired_prompt_type or ("主提示词" if prompt else "")
         row["状态"] = status or ("已生成" if prompt else "待生成")
         row["备注"] = note
         row["更新时间"] = now

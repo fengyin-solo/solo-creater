@@ -129,6 +129,7 @@
 - `编号` 必须按整数理解，不按聊天序号猜。
 - `提示词` 为空表示还没生成。
 - `提示词类型=主提示词` 表示首轮或主线提示词；`提示词类型=修复提示词` 表示只有在修复提示词真的进入验收时才追加的记录行。
+- 对同一个子项目写入 `提示词类型=修复提示词` 时，必须追加新的修复提示词记录；禁止覆盖该子项目既有的 `主提示词` 行。
 - `状态=已发送` 表示该行提示词已经投递到 Trae。
 - 进入验收后，不再往 `solo-create-prompts.xlsx` 写入任何验收结果、Repo URL、Commit ID、Trae Session ID、验收时间或不满意原因。
 - `solo-create-prompts.xlsx` 只用于定位提示词、记录提示词类型，以及生成 / 投递阶段的状态维护。
@@ -158,6 +159,7 @@
 - `completion=已完成` 时，`needs_dissatisfaction=false` 且 `needs_next_prompt=false`。
 - `completion!=已完成` 时，`needs_dissatisfaction=true` 且 `needs_next_prompt=true`。
 - `prompt_text` 必须对应当前这次验收的提示词；修复验收时不要回填首轮主提示词。
+- 修复验收时，`prompt_text` 必须对应当前有效的最新修复提示词；如果同时存在主提示词和修复提示词，禁止回填主提示词。
 - `modified_file_count` 必须是当前这次验收实际涉及的修改文件个数，按整数输出，最小值为 `0`。
 - `modified_file_count` 的统计口径必须前后一致：优先按当前工作区里围绕本次提示词的已修改文件集合统计；如果当前是 `带 Session 提交态` 且改动已经提交，也可以按本次被验收提交对应的文件集合统计，但最终输出只允许保留一个整数值。
 - `acceptance_mode=with_session_commit` 时，`trae_session_id` 必须是当前上下文里的有效原始值，且来源必须是用户消息或明确注入值。
@@ -253,6 +255,7 @@ acceptance_output = {
 
 - 结果 Excel 与 `solo-create-prompts.xlsx` 必须分离。
 - 结果 Excel 默认放在项目目录父级，默认文件名为 `solo-create-acceptance-results2.xlsx`。
+- 同一 `Repo ID` 下允许存在多条不同轮次的验收历史；修复轮次回填时必须追加新记录，不能覆盖主轮次验收记录。
 - 如果结果 Excel 不存在，第一次回填时必须新建。
 - 结果 Excel 的 sheet 名必须是 `prompts`。
 - 表头必须严格是这 12 列，顺序不能改：`Repo ID`、`Trae Session ID`、`提示词`、`Repo URL`、`Commit ID`、`任务类型`、`业务领域`、`修改范围`、`任务难度`、`任务是否完成`、`过程与产物是否满意`、`不满意原因`。
