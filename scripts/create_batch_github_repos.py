@@ -139,8 +139,11 @@ def copy_source_tree(source: Path, target: Path) -> None:
     shutil.copytree(source, target, ignore=ignore)
 
 
-def initial_commit(target: Path, branch: str) -> None:
+def init_repo(target: Path, branch: str) -> None:
     run_command(["git", "init", "-b", branch], cwd=target, check=True)
+
+
+def initial_commit(target: Path, branch: str) -> None:
     run_command(["git", "add", "-A"], cwd=target, check=True)
     result = run_command(["git", "diff", "--cached", "--quiet"], cwd=target)
     if result.returncode == 0:
@@ -223,9 +226,13 @@ def build_specs(args: argparse.Namespace) -> list[TaskSpec]:
     ]
 
 
-def planned_repos(source_number: str, specs: list[TaskSpec]) -> list[dict[str, object]]:
+def planned_repos(
+    source_number: str,
+    specs: list[TaskSpec],
+    start_sequence: int = 1,
+) -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
-    sequence = 1
+    sequence = start_sequence
     remaining = {spec.slug: spec.count for spec in specs}
     type_indices = {spec.slug: 0 for spec in specs}
     primary_slugs = ["codegen", "feature"]
@@ -259,6 +266,12 @@ def main() -> None:
     parser.add_argument("--owner", help="GitHub user or organization. If omitted, gh uses the authenticated default")
     parser.add_argument("--visibility", choices=["public", "private", "internal"], default="public")
     parser.add_argument("--source-number", help="Project number used in repo names")
+    parser.add_argument(
+        "--start-sequence",
+        type=int,
+        default=1,
+        help="First global sequence number used in repo names; use it to append to an existing batch",
+    )
     parser.add_argument("--codegen-count", type=int, default=20)
     parser.add_argument("--feature-count", type=int, default=20)
     parser.add_argument("--understand-count", type=int, default=1)
@@ -300,7 +313,9 @@ def main() -> None:
 
     branch = default_branch_name(source)
     specs = build_specs(args)
-    plan = planned_repos(source_number, specs)
+    if args.start_sequence < 1:
+        raise SystemExit("--start-sequence must be a positive integer")
+    plan = planned_repos(source_number, specs, args.start_sequence)
     created: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
     failed: list[dict[str, str]] = []
@@ -328,6 +343,7 @@ def main() -> None:
             continue
         try:
             copy_source_tree(source, target)
+            init_repo(target, branch)
             set_local_git_identity(target, args.git_user_name, args.git_user_email)
             initial_commit(target, branch)
             if not repo_exists(gh_bin, full_name):
