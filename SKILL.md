@@ -125,18 +125,20 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 ### 1.3 批量建仓路
 
-当用户要求在父目录下把一个源代码仓库批量复制成多个 GitHub 仓库时，进入 `批量建仓路`。典型表达包括：
+当用户要求在父目录下把唯一的源代码子目录批量铺成多个本地任务目录时，进入 `批量建仓路`。典型表达包括：
 
-- 建多个仓库。
-- 复制仓库。
-- GitHub 批量建仓。
-- 初始化多个源码一样的仓库。
+- 批量建仓。
+- 批量建任务目录。
+- 按源代码批量复制出多个项目目录。
+- 初始化一批源码相同的工作目录。
+
+命中后按 `6.1` 调用 `$solo-batch-repo-seed`，只在本地建目录和建工作簿，不创建 GitHub 仓库、不推送远端。
 
 ### 1.4 批量首轮路
 
 当用户要求在父目录下遍历多个子文件夹、批量生成提示词或写入 Excel 时，进入 `批量首轮路`。
 
-如果父目录下还只有一个源仓库，且用户的真实目标是先得到多个源码相同的 GitHub 仓库，不要进入批量首轮路，必须改走 `批量建仓路`。
+如果父目录下还只有一个源代码子目录，且还没有建出任务目录和工作簿，不要进入批量首轮路，必须改走 `批量建仓路`。
 
 ### 1.5 批量投递路
 
@@ -195,11 +197,16 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 ### 2.4 无法判定 source 项目编号
 
-批量建仓路里，如果源仓库目录名提取不出连续数字，且用户没有指定 `--source-number`：
+批量建仓路里，如果源目录名和父目录名都提取不出连续数字，且用户没有指定 `--source-number`：
 
 - 立即停止。
 - 只要求用户补 `--source-number`。
 - 不要自己编编号。
+
+批量建仓路里，如果父目录下的候选子目录不是恰好一个，或者唯一源目录没有绑定 Git：
+
+- 立即停止，不要建任何目录、不要写工作簿。
+- 未绑定 Git 时只提示用户：原始代码目录没有绑定 Git，请先初始化 Git 仓库再重新运行批量建仓。
 
 ### 2.5 路由无法确定
 
@@ -375,7 +382,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 ## 4. 总原则
 
 - 只要进入验收，默认先做结果验收。
-- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/66000201-codegen-1`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
+- 验收完成后，必须通过 `$solo-acceptance-results` 把结果回填到当前子项目目录的直接父目录里的独立结果 Excel；例如子项目是 `.../solo-6600021/66000212-codegen-2`，结果 Excel 就写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；禁止把验收结果、Repo URL、Commit ID、Trae Session ID 或不满意原因写入 `solo-create-prompts.xlsx`。
 - 结果 Excel 与生成提示词 Excel 必须分离；默认结果文件名是 `solo-create-acceptance-results2.xlsx`，第一次不存在时由 `$solo-acceptance-results` 新建。
 - 验收默认目标是优先找出“未完成”的直接证据，不以替实现补理由，也不以凑出“已完成”结论为目标。
 - 只要是前端页面、前端交互、可视化结果、浏览器流程或用户能点到的链路，默认按“需要浏览器严格实操”处理；除非代码侧已经足以直接判 `未完成`。
@@ -531,7 +538,9 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 ### 6.1 批量建仓路
 
-当父目录初始化时只有一个源代码仓库，而用户要求批量复制成多个 GitHub 仓库时，走这条路。
+当父目录初始化时只有一个源代码子目录，而用户要求批量铺成多个本地任务目录时，走这条路。
+
+这条路只做本地动作：把唯一子目录当作原始代码，校验它绑定了 Git，按固定命名和数量在父目录建出 63 个任务目录（每个任务目录固定含 `origin` 与 `workspace`），并在父目录新建 `solo-create-prompts.xlsx`。不创建 GitHub 仓库，不推送远端，不改动源目录。
 
 这条 route 的细则不再内联在本文件中，必须调用平级 skill：
 
@@ -541,14 +550,16 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 本 skill 在这条 route 里只负责：
 
 - 确认已经唯一命中 `批量建仓路`。
-- 把父目录、源仓库、owner、visibility、source number、git 身份等上下文收束后交给 `$solo-batch-repo-seed`。
-- 批量建仓时要求 `$solo-batch-repo-seed` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替规划仓库序号；其他任务类型排在这两类之后。
+- 把父目录、源目录、source number、命名规则、默认数量等上下文收束后交给 `$solo-batch-repo-seed`。
+- 批量建仓时要求 `$solo-batch-repo-seed` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替规划目录序号；其他任务类型排在这两类之后。
+- 默认数量固定为 `代码生成` 30 个、`功能迭代` 30 个、`代码理解` 1 个、`代码重构` 1 个、`工程化` 1 个，共 63 个。
+- 默认命名沿用 `<源项目编号><序号>-<任务类型标识>-<序号>`；只有用户明确要求短编号时才切到 `--name-style dash`。
 - 保留本文件 `2.4` 的 Hard Stop 优先级；如果源项目编号无法判定且用户没给 `--source-number`，先停，不要下发给子 skill。
 - 接收子 skill 返回的建仓结果摘要。
 - 建仓成功后继续进入 `批量首轮路`；默认先运行：
   - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py scan --parent "<父目录>"`
 
-除了路由判定和结果衔接，本 skill 不再重复维护批量建仓的具体步骤、命名规则、dry-run、远端校验和失败修复细则；这些全部以下沉后的 `$solo-batch-repo-seed` 为准。
+除了路由判定和结果衔接，本 skill 不再重复维护批量建仓的具体步骤、命名规则、dry-run、目录结构校验和失败修复细则；这些全部以下沉后的 `$solo-batch-repo-seed` 为准。
 
 ### 6.2 批量首轮路
 
@@ -562,10 +573,12 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 本 skill 在这条 route 里只负责：
 
 - 确认已经唯一命中 `批量首轮路`。
-- 如果父目录下还只有一个源仓库，且真实目标是先得到多个源码相同的 GitHub 仓库，强制回退到 `批量建仓路`，不要误进本路。
-- 把父目录、Excel 路径和默认建议投递范围等上下文收束后交给 `$solo-batch-first-prompts`。
+- 如果父目录下还只有一个源代码子目录，且还没有建出任务目录和工作簿，强制回退到 `批量建仓路`，不要误进本路。
+- 把父目录、Excel 路径和难度规则等上下文收束后交给 `$solo-batch-first-prompts`。
 - 批量生成时要求 `$solo-batch-first-prompts` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替处理；如果某一类 pending 不足 5 个，就处理该类剩余数量后继续切换，其他任务类型排在这两类之后。
 - 接收子 skill 返回的批量生成摘要。
+- 每个任务的代码来源是它自己目录下的 `origin`；`origin` 不含 git 信息，批量生成阶段不要在这些目录里跑 `git status` / `git diff`。
+- 批量生成时默认难度只有 `地狱` 和 `困难` 两档，按目录编号奇偶分配，整体各占一半：编号奇数取 `地狱`，偶数取 `困难`；默认 63 个时是 `地狱` 32 个、`困难` 31 个。
 - 批量生成成功后，到此为止，不要自动进入批量投递路，不要自动投递前 6 个提示词。
 - 批量生成成功后，明确告知用户下一步可运行 1-6 继续批量投递；如果用户后续明确指定其他数量或编号范围，再进入 `批量投递路`。
 - 给用户的最终回复仍只简要说明：
@@ -738,6 +751,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 如果当前是 `带 Session 提交态`，在检查工作区改动、执行 `git commit` 或执行 `git push` 之前，必须先做一次前置 remote 探测；优先运行：
   - `git ls-remote --heads origin`
 - 如果前置 remote 探测失败，立即命中 `2.6`，不要继续 `git commit`、`git push`、`git amend` 或最终验收输出。
+- 如果当前进入修复轮次，必须先把该次修复提示词作为独立记录追加到提示词 Excel；禁止把修复提示词写回或覆盖原有主提示词记录。
 - 如果当前是 `带 Session 提交态`，且工作区里存在围绕当前提示词的改动，不管最终结论是 `已完成`、`未完成` 还是 `暂时无法判定完成`，都必须先用合法 `Trae Session ID` 提交一次，再尝试 push 到远程，然后再输出验收结论。
 - `带 Session 提交态` 下，用于 push 的提交 message 必须严格等于这个合法 `Trae Session ID`。
 - `带 Session 提交态` 下，如果当前分支上还没有以该合法 `Trae Session ID` 为 message 的提交，先补提交再 push。
@@ -765,9 +779,10 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 如果当前是 `带 Session 提交态`，且因为远端不可达、权限不足、仓库未配置 upstream 或其他 push / remote 问题导致没法正常 push，立即命中 `2.6`；先告知用户问题并恢复正常推送，恢复前不要输出验收结果。
 - 如果当前是 `带 Session 提交态`，且当前仓库远端是 GitHub，默认优先保持或切换到 SSH 推送链路；只有用户明确要求保留 HTTPS 时，才继续使用 HTTPS 远端做提交态推送。
 - 只要没有命中 `2.6`，在最终验收模板发给用户前必须调用 `$solo-acceptance-results` 回填结果 Excel；回填不改变原有聊天输出字段，也不要在最终模板里新增 Excel 路径或回填状态。
-- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/66000201-codegen-1` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `$solo-acceptance-results` 文档里定义的标准表头一致。
+- `$solo-acceptance-results` 必须写当前子项目目录的直接父目录里的独立结果 Excel，默认文件名 `solo-create-acceptance-results2.xlsx`；例如 `.../solo-6600021/66000211-codegen-1` 必须写到 `.../solo-6600021/solo-create-acceptance-results2.xlsx`；如果第一次不存在就新建，表头必须和 `$solo-acceptance-results` 文档里定义的标准表头一致。
 - 回填给 `$solo-acceptance-results` 的 `Repo ID` 必须是 `ybl-<数字编号>-<序号>` 标准格式；不能从项目目录名解析出标准值时，必须显式传入标准 `repo_id`，否则回填脚本会失败，禁止原样写入目录名。
 - 回填输入必须来自当前 `acceptance_context`、`final_output` 和 `$solo-dissatisfaction` 结果，不要重新改写验收结论。
+- 如果当前是修复轮次验收，回填输入里的 `prompt_text` 必须是当前有效修复提示词，`task_type` 必须按修复轮次口径写入；结果 Excel 必须追加新的修复轮次记录，不能覆盖主轮次验收记录。
 - 如果 `completion != 已完成`，回填输入还必须携带 `$solo-dissatisfaction` 校验所需的 `next_prompt`、过程证据、产物证据、模型自身责任依据和 `environment_issue_excluded=true`；回填脚本会再次运行校验，校验失败时禁止写入 Excel。
 - 如果 `$solo-acceptance-results` 回填失败，先修复回填问题并重试；禁止改写到 `solo-create-prompts.xlsx`，禁止静默跳过回填后结束验收流程。
 
@@ -1153,6 +1168,8 @@ https://github.com/owner/repo
 - 如果当前是 `无 Session 只验收态`，最终输出是否已经去掉 `Commit ID` 和 `Trae Session ID`。
 - 如果当前是修复轮次验收，`【提示词】` 是否已经切换为当前修复提示词，而不是首轮提示词。
 - 如果当前已经有多条修复提示词，`【提示词】` 是否对应最新且当前有效的那一条。
+- 如果当前是修复轮次验收，是否已经确认提示词 Excel 追加了新的修复提示词记录，而不是复用主提示词记录。
+- 如果当前是修复轮次验收，结果 Excel 是否已经新增修复轮次验收记录，而不是覆盖主轮次验收记录。
 - 如果当前是 `带 Session 提交态`，用户输入的 `Trae Session ID`、`git commit` message、最终输出里的 `【Trae Session ID】` 是否完全一致。
 - 如果当前是 `无 Session 只验收态`，是否确实没有执行 `git commit`、`git push`、`git amend`。
 - `solo-dissatisfaction` 输入包是否已经包含过程轨迹证据、产物证据、未满足需求和模型自身责任依据，且没有凭空编造 Trae 过程或把环境 / 网络波动写成模型问题。

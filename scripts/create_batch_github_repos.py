@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Create many GitHub repos from one source repository for solo-create."""
+"""LEGACY: Create many GitHub repos from one source repository for solo-create.
+
+批量建仓路当前已改为本地建目录（scripts/create_batch_local_tasks.py）：
+只建 origin / workspace 和 solo-create-prompts.xlsx，不创建 GitHub 仓库、不推送远端。
+本脚本仅保留历史建仓能力，不要在批量建仓路里调用它。
+"""
 
 from __future__ import annotations
 
@@ -131,6 +136,16 @@ def repo_exists(gh_bin: str, full_name: str) -> bool:
     return result.returncode == 0
 
 
+def resolve_owner(gh_bin: str, explicit_owner: str | None) -> str:
+    if explicit_owner:
+        return explicit_owner
+    result = run_command([gh_bin, "api", "user", "-q", ".login"], check=True)
+    owner = result.stdout.strip()
+    if not owner:
+        raise SystemExit("Cannot resolve GitHub owner from the authenticated gh account.")
+    return owner
+
+
 def copy_source_tree(source: Path, target: Path) -> None:
     def ignore(directory: str, names: list[str]) -> set[str]:
         ignored = {".git"} if ".git" in names else set()
@@ -241,8 +256,7 @@ def planned_repos(
         for slug in primary_slugs:
             for _ in range(min(5, remaining.get(slug, 0))):
                 type_indices[slug] += 1
-                repo_prefix = f"{source_number}{sequence:02d}"
-                name = f"{repo_prefix}-{slug}-{sequence}"
+                name = f"{source_number}{sequence}-{slug}-{sequence}"
                 items.append({"name": name, "task_slug": slug, "index": sequence, "type_index": type_indices[slug]})
                 sequence += 1
                 remaining[slug] -= 1
@@ -252,8 +266,7 @@ def planned_repos(
             continue
         for _ in range(remaining.get(spec.slug, 0)):
             type_indices[spec.slug] += 1
-            repo_prefix = f"{source_number}{sequence:02d}"
-            name = f"{repo_prefix}-{spec.slug}-{sequence}"
+            name = f"{source_number}{sequence}-{spec.slug}-{sequence}"
             items.append({"name": name, "task_slug": spec.slug, "index": sequence, "type_index": type_indices[spec.slug]})
             sequence += 1
     return items
@@ -302,6 +315,7 @@ def main() -> None:
     auth = run_command([gh_bin, "auth", "status"])
     if auth.returncode != 0:
         raise SystemExit(auth.stderr.strip() or "GitHub CLI is not authenticated")
+    owner = resolve_owner(gh_bin, args.owner)
 
     dirty = git_status_porcelain(source)
     if dirty and not args.allow_dirty:
@@ -322,7 +336,7 @@ def main() -> None:
 
     for item in plan:
         repo_name = str(item["name"])
-        full_name = f"{args.owner}/{repo_name}" if args.owner else repo_name
+        full_name = f"{owner}/{repo_name}"
         target = parent / repo_name
         if target.exists():
             if not args.dry_run and (target / ".git").exists() and repo_exists(gh_bin, full_name):
