@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Create many GitHub repos from one source repository for solo-create."""
+"""LEGACY: Create many GitHub repos from one source repository for solo-create.
+
+批量建仓路当前已改为本地建目录（scripts/create_batch_local_tasks.py）：
+只建 origin / workspace 和 solo-create-prompts.xlsx，不创建 GitHub 仓库、不推送远端。
+本脚本仅保留历史建仓能力，不要在批量建仓路里调用它。
+"""
 
 from __future__ import annotations
 
