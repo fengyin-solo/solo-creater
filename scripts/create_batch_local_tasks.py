@@ -110,8 +110,9 @@ def build_specs(args: argparse.Namespace) -> list[TaskSpec]:
     return [
         TaskSpec("codegen", "代码生成", args.codegen_count),
         TaskSpec("feature", "功能迭代", args.feature_count),
-        TaskSpec("understand", "代码理解", args.understand_count),
+        TaskSpec("bug", "缺陷修复", args.bug_count),
         TaskSpec("refactor", "代码重构", args.refactor_count),
+        TaskSpec("understand", "代码理解", args.understand_count),
         TaskSpec("engineering", "工程化", args.engineering_count),
     ]
 
@@ -168,9 +169,11 @@ def planned_tasks(
     return items
 
 
-def copy_code(source: Path, origin: Path) -> None:
+def copy_code(source: Path, origin: Path, extra_ignore: set[str] | None = None) -> None:
+    ignore_names = COPY_IGNORE | (extra_ignore or set())
+
     def ignore(directory: str, names: list[str]) -> set[str]:
-        return {name for name in names if name in COPY_IGNORE}
+        return {name for name in names if name in ignore_names}
 
     shutil.copytree(source, origin, ignore=ignore, symlinks=True)
 
@@ -204,12 +207,23 @@ def main() -> None:
     parser.add_argument("--source-number", help="Project number used in task folder names")
     parser.add_argument("--name-style", choices=["concat", "dash"], default="concat",
                         help="concat: <编号><序号>-<标识>-<序号>（默认，沿用现有规则）；dash: <编号>-<标识>-<序号>")
-    parser.add_argument("--codegen-count", type=int, default=30)
-    parser.add_argument("--feature-count", type=int, default=30)
-    parser.add_argument("--understand-count", type=int, default=1)
+    parser.add_argument("--codegen-count", type=int, default=20)
+    parser.add_argument("--feature-count", type=int, default=20)
+    parser.add_argument("--bug-count", type=int, default=0)
     parser.add_argument("--refactor-count", type=int, default=1)
+    parser.add_argument("--understand-count", type=int, default=1)
     parser.add_argument("--engineering-count", type=int, default=1)
     parser.add_argument("--workbook", default=DEFAULT_WORKBOOK)
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "复制 origin 时额外排除的目录名或文件名，可重复传入。"
+            "例如 --exclude node_modules --exclude dist。默认只排除 .git 和 .DS_Store。"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -229,6 +243,7 @@ def main() -> None:
     source_number = resolve_source_number(source, parent, args.source_number)
     specs = build_specs(args)
     tasks = planned_tasks(source_number, specs, args.name_style)
+    extra_ignore = {name.strip() for name in args.exclude if name.strip()}
 
     created: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
@@ -246,7 +261,7 @@ def main() -> None:
         try:
             target.mkdir(parents=True)
             origin = target / "origin"
-            copy_code(source, origin)
+            copy_code(source, origin, extra_ignore)
             (target / "workspace").mkdir()
             if (origin / ".git").exists():
                 raise RuntimeError("origin still contains git metadata")
@@ -284,6 +299,7 @@ def main() -> None:
                 "source": str(source),
                 "source_number": source_number,
                 "name_style": args.name_style,
+                "copy_exclude_extra": sorted(extra_ignore),
                 "difficulty_rule": "编号奇数=地狱，偶数=困难",
                 "difficulty_split": difficulty_split,
                 "dry_run": args.dry_run,

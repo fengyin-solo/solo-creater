@@ -14,12 +14,25 @@ def main() -> None:
     parser.add_argument("--project-name", default="", help="可选项目名")
     parser.add_argument("--task-type", required=True, help="当前任务类型")
     parser.add_argument("--angle", required=True, help="提示词切入点")
+    parser.add_argument(
+        "--difficulty",
+        default="",
+        help="难度档位：地狱 | 困难；单项目出题时可留空",
+    )
+    parser.add_argument(
+        "--hidden-constraints",
+        default="",
+        help="题面未写、验收阶段要核对的隐藏约束；没有就传空",
+    )
     parser.add_argument("--prompt", required=True, help="最终提示词")
     args = parser.parse_args()
 
     project_path = Path(args.project_path).resolve()
     project_name = args.project_name.strip() or project_path.name
     prefix = detect_prefix(project_name, project_path.name, str(project_path))
+    difficulty = args.difficulty.strip()
+    if difficulty not in ("", "地狱", "困难"):
+        raise SystemExit("--difficulty 只允许 地狱 | 困难，或留空")
 
     append_history(
         {
@@ -28,6 +41,8 @@ def main() -> None:
             "prefix": prefix,
             "task_type": args.task_type.strip(),
             "angle": args.angle.strip(),
+            "difficulty": difficulty,
+            "hidden_constraints": args.hidden_constraints.strip(),
             "prompt": args.prompt.strip(),
         }
     )
