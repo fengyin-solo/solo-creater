@@ -58,7 +58,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 只要 route 是单项目流程，就必须先运行：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/ensure_trae_project_open.py --project-path .`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/ensure_trae_project_open.py --project-path .`
 
 这一步优先级高于扫仓库、记基线、查历史、读手册、启动项目和浏览器验收。不要后移，不要懒触发，不要省略。
 
@@ -66,7 +66,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 ### 0.4 核心数据格式
 
-除了流程顺序，核心数据也必须先匹配 [data-contract.md](/Users/fengyin/.codex/skills/solo-create/references/data-contract.md) 里的 schema，再进入 route 判断或最终输出。
+除了流程顺序，核心数据也必须先匹配 [data-contract.md](/Users/fengyin/.codex/skills/solo-creater/references/data-contract.md) 里的 schema，再进入 route 判断或最终输出。
 
 必须使用并遵守这 7 组数据对象：
 
@@ -88,7 +88,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - `$solo-dissatisfaction` 可以接收包含路径、文件名、函数名、命令名等技术细节的内部证据，但返回给最终验收模板的 `过程不满意`、`产物不满意` 和 `下一轮提示词` 必须是中文自然描述，不得出现文件路径、英文单词或原始代码标识。
 - 生成最终验收模板后，必须使用 `$solo-acceptance-results`，并先满足 `acceptance_result_row` 的字段和结果 Excel 回填规则。
 - 最终返回给用户时，只允许输出 `final_output` 允许的形态。
-- 只要涉及 `Trae Session ID`，先按 [data-contract.md](/Users/fengyin/.codex/skills/solo-create/references/data-contract.md) 里的 `0. Trae Session ID 格式` 校验；不合法就按“未收到合法 Session ID”处理。
+- 只要涉及 `Trae Session ID`，先按 [data-contract.md](/Users/fengyin/.codex/skills/solo-creater/references/data-contract.md) 里的 `0. Trae Session ID 格式` 校验；不合法就按“未收到合法 Session ID”处理。
 - 只有本次验收明确走“带 Session 提交态”时，才检查 3 个环节完全一致：当前有效值、`git commit` message、最终质检结论输出值。
 
 如果本文件与 `data-contract.md` 的字段定义冲突，一律以 `data-contract.md` 为准。
@@ -103,7 +103,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 - 当前目录是单个工程。
 - 运行：
-  - `python3 /Users/fengyin/.codex/skills/solo-create/scripts/batch_prompt_workbook.py locate-project --project .`
+  - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
 - 返回 `found: true`。
 - 记录里的 `提示词` 非空。
 
@@ -426,7 +426,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 进入单工程目录后，先运行：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/batch_prompt_workbook.py locate-project --project .`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py locate-project --project .`
 
 如果返回 `found: true`，且记录里 `提示词` 非空：
 
@@ -455,7 +455,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 3. 只读和当前切入点直接相关的文件。
 4. 判断任务类型；明确就直走，不明确才让用户选。
 5. 运行历史验重：
-   - `python3 /Users/fengyin/.codex/skills/solo-create/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
+   - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
 6. 按任务类型只读命中的一本手册，不要把全部手册都读一遍。
 7. 尝试记基线：
    - 优先运行仓库里的 `scripts/record_round_baseline.py`
@@ -464,7 +464,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 8. 生成符合“首轮提示词要求”的中文提示词。
 9. 执行输出级禁词检查。
 10. 记录提示词历史，并带上难度档位和这次用到的隐藏约束：
-    - `python3 /Users/fengyin/.codex/skills/solo-create/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
+    - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
 
 首轮去重规则必须执行：
 
@@ -507,7 +507,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 与同项目历史提示词之间，文字重复率必须 `<= 20%`（字符 3-gram 重合率，口径是两条提示词里较短一方被另一方覆盖的比例）。
 - 语义近似度必须 `<= 20%`：脚本按字符 2-gram 的 TF-IDF 余弦给出客观值，自己还要再做一次语义复核，两边取更严的。
 - 复合需求交叉重叠必须为 0 对：两条提示词共享 2 个以上业务能力点（筛选、排序、搜索、导出、统计汇总、权限角色、通知提醒、批量操作等）即判交叉重叠；出现率超过 30% 的高频能力标签只记录、不判违规。
-- 必须实测，命令是 `python3 /Users/fengyin/.codex/skills/solo-create/scripts/check_prompt_dedup.py --include-history --prompts-file "<把本次最终提示词写进临时文件>"`，或者按批量场景直接用 `--parent "<父目录>"`。
+- 必须实测，命令是 `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --include-history --prompts-file "<把本次最终提示词写进临时文件>"`，或者按批量场景直接用 `--parent "<父目录>"`。
 - 返回 `ok: false` 时必须换角度重出，只改同义词不算通过；重出后重新跑检查，直到 `ok: true` 才能输出。
 
 类型判断默认规则：
@@ -550,7 +550,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 不要和这次 `过程不满意` 形成近似复述。
 - 不要和这次 `产物不满意` 形成近似复述。
 - 不要和本项目历史修复提示词只做同义词替换。
-- 必须通过与首轮同一套重复硬阈值：把这条修复提示词写进临时文件后运行 `python3 /Users/fengyin/.codex/skills/solo-create/scripts/check_prompt_dedup.py --include-history --prompts-file "<临时文件>"`，文字重复率、语义近似度都要 `<= 20%`，复合需求交叉重叠为 0 对，`ok: false` 时换角度重出。
+- 必须通过与首轮同一套重复硬阈值：把这条修复提示词写进临时文件后运行 `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --include-history --prompts-file "<临时文件>"`，文字重复率、语义近似度都要 `<= 20%`，复合需求交叉重叠为 0 对，`ok: false` 时换角度重出。
 
 ## 6. 批量路径
 
@@ -575,7 +575,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 保留本文件 `2.4` 的 Hard Stop 优先级；如果源项目编号无法判定且用户没给 `--source-number`，先停，不要下发给子 skill。
 - 接收子 skill 返回的建仓结果摘要。
 - 建仓成功后继续进入 `批量首轮路`；默认先运行：
-  - `python3 /Users/fengyin/.codex/skills/solo-create/scripts/batch_prompt_workbook.py scan --parent "<父目录>"`
+  - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py scan --parent "<父目录>"`
 
 除了路由判定和结果衔接，本 skill 不再重复维护批量建仓的具体步骤、命名规则、dry-run、目录结构校验和失败修复细则；这些全部以下沉后的 `$solo-batch-repo-seed` 为准。
 
@@ -630,19 +630,19 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 按范围投递命令：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --range "22-27"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --range "22-27"`
 
 按数量投递命令：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --limit 6`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/send_batch_prompts_to_trae.py --parent "<父目录>" --limit 6`
 
 投递后核对命令：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/batch_prompt_workbook.py pick --parent "<父目录>" --range "<已投递编号范围>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py pick --parent "<父目录>" --range "<已投递编号范围>"`
 
 必要时补写状态：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --status "已发送" --note "已自动发送到 Trae"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --status "已发送" --note "已自动发送到 Trae"`
 
 如果 Trae 没有聚焦聊天输入框，先停下并告诉用户需要把光标放进 Trae 聊天输入框后再重试；不要把提示词发送到不确定输入区域。
 
@@ -652,7 +652,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 如果本次验收对应的提示词记录了隐藏约束，必须先取回同一份清单再验收：
 
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/query_prompt_history.py --project-path "<项目路径>" --task-type "<任务类型>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path "<项目路径>" --task-type "<任务类型>"`
 - 取回后按清单逐条核对，隐藏约束不满足时，和题面明示要求不满足同等处理，直接计入 `未完成` 证据。
 - 隐藏约束只用于验收核对，不得在最终输出里把它改写成新的需求，也不要把它写进 `【提示词】`。
 
@@ -1182,9 +1182,9 @@ https://github.com/owner/repo
 
 - `scripts/record_round_baseline.py`
 - `scripts/compare_round_baseline.py`
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
-- `python3 /Users/fengyin/.codex/skills/solo-create/scripts/check_prompt_dedup.py --parent "<父目录>" --include-history`（提示词重复硬阈值检查：文字重复率、语义近似度 `<= 20%`，复合需求交叉重叠 0 对）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/query_prompt_history.py --project-path . --task-type "<任务类型>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --parent "<父目录>" --include-history`（提示词重复硬阈值检查：文字重复率、语义近似度 `<= 20%`，复合需求交叉重叠 0 对）
 
 ### 12.3 多项目并行
 
