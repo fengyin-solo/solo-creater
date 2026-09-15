@@ -124,8 +124,9 @@ def task_name(source_number: str, sequence: int, slug: str, name_style: str) -> 
 
 
 def difficulty_of(sequence: int) -> str:
-    # 编号奇数取 地狱、偶数取 困难，整体各占一半。
-    return "地狱" if sequence % 2 else "困难"
+    # 默认整批按 地狱 出题；只有确实达不到地狱档硬要求的条目才会在生成阶段
+    # 降为 困难，并写进工作簿备注。这里不再按编号奇偶对半分配。
+    return "地狱"
 
 
 def planned_tasks(
@@ -207,9 +208,9 @@ def main() -> None:
     parser.add_argument("--source-number", help="Project number used in task folder names")
     parser.add_argument("--name-style", choices=["concat", "dash"], default="concat",
                         help="concat: <编号><序号>-<标识>-<序号>（默认，沿用现有规则）；dash: <编号>-<标识>-<序号>")
-    parser.add_argument("--codegen-count", type=int, default=20)
-    parser.add_argument("--feature-count", type=int, default=20)
-    parser.add_argument("--bug-count", type=int, default=0)
+    parser.add_argument("--codegen-count", type=int, default=18)
+    parser.add_argument("--feature-count", type=int, default=18)
+    parser.add_argument("--bug-count", type=int, default=7)
     parser.add_argument("--refactor-count", type=int, default=1)
     parser.add_argument("--understand-count", type=int, default=1)
     parser.add_argument("--engineering-count", type=int, default=1)
@@ -300,7 +301,7 @@ def main() -> None:
                 "source_number": source_number,
                 "name_style": args.name_style,
                 "copy_exclude_extra": sorted(extra_ignore),
-                "difficulty_rule": "编号奇数=地狱，偶数=困难",
+                "difficulty_rule": "默认整批取地狱；只有确实达不到地狱档硬要求时才降为困难，不出现简单档、不做对半分配",
                 "difficulty_split": difficulty_split,
                 "dry_run": args.dry_run,
                 "planned_count": len(tasks),
