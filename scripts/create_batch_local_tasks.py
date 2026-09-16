@@ -106,15 +106,35 @@ def resolve_source_number(source: Path, parent: Path, explicit: str | None) -> s
     )
 
 
-def build_specs(args: argparse.Namespace) -> list[TaskSpec]:
-    return [
-        TaskSpec("codegen", "代码生成", args.codegen_count),
-        TaskSpec("feature", "功能迭代", args.feature_count),
-        TaskSpec("bug", "缺陷修复", args.bug_count),
-        TaskSpec("refactor", "代码重构", args.refactor_count),
-        TaskSpec("understand", "代码理解", args.understand_count),
-        TaskSpec("engineering", "工程化", args.engineering_count),
-    ]
+TYPE_BY_SLUG = {
+    "codegen": "代码生成",
+    "feature": "功能迭代",
+    "bug": "缺陷修复",
+    "refactor": "代码重构",
+    "understand": "代码理解",
+    "engineering": "工程化",
+}
+
+
+def capacity_driven_counts(
+    source: Path, overrides: dict[str, int | None], *, max_per_repo: int, max_per_subject: int,
+) -> tuple[dict[str, int], dict[str, object]]:
+    """先算这个仓库能出多少条题，再决定建几个目录。
+
+    2026-09-16 起批量建仓不再固定 46 条：平台是在同一个仓库里两两比对的，一个仓库能承载的
+    题量 = min(单仓库上限, 主体数 × 每主体上限)。把想要的数量当成固定值，就会建出一批
+    注定被判雷同的目录（实测 48/49 条的批次废弃 44%/35%）。
+    """
+    from check_repo_theme import compute_capacity, derive_repo_modules
+
+    capacity = compute_capacity(
+        derive_repo_modules(source), max_per_repo=max_per_repo, max_per_subject=max_per_subject,
+    )
+    counts: dict[str, int] = {}
+    for slug, task_type in TYPE_BY_SLUG.items():
+        override = overrides.get(slug)
+        counts[slug] = int(override) if override is not None else int(capacity["type_mix"][task_type])
+    return counts, capacity
 
 
 def task_name(source_number: str, sequence: int, slug: str, name_style: str) -> str:
@@ -208,12 +228,18 @@ def main() -> None:
     parser.add_argument("--source-number", help="Project number used in task folder names")
     parser.add_argument("--name-style", choices=["concat", "dash"], default="concat",
                         help="concat: <编号><序号>-<标识>-<序号>（默认，沿用现有规则）；dash: <编号>-<标识>-<序号>")
-    parser.add_argument("--codegen-count", type=int, default=18)
-    parser.add_argument("--feature-count", type=int, default=18)
-    parser.add_argument("--bug-count", type=int, default=7)
-    parser.add_argument("--refactor-count", type=int, default=1)
-    parser.add_argument("--understand-count", type=int, default=1)
-    parser.add_argument("--engineering-count", type=int, default=1)
+    # 不传数量时按仓库容量算（min(单仓库上限, 主体数 × 每主体上限)），不再固定 46 条。
+    parser.add_argument("--codegen-count", type=int, default=None,
+                        help="不传就按仓库容量自动分配")
+    parser.add_argument("--feature-count", type=int, default=None)
+    parser.add_argument("--bug-count", type=int, default=None)
+    parser.add_argument("--refactor-count", type=int, default=None)
+    parser.add_argument("--understand-count", type=int, default=None)
+    parser.add_argument("--engineering-count", type=int, default=None)
+    parser.add_argument("--max-per-repo", type=int, default=None,
+                        help="单仓库条数上限，默认用 check_repo_theme 的 35")
+    parser.add_argument("--max-per-subject", type=int, default=None,
+                        help="同一主体条数上限，默认用 check_repo_theme 的 2")
     parser.add_argument("--workbook", default=DEFAULT_WORKBOOK)
     parser.add_argument(
         "--exclude",
@@ -242,8 +268,26 @@ def main() -> None:
         )
 
     source_number = resolve_source_number(source, parent, args.source_number)
-    specs = build_specs(args)
+    from check_repo_theme import DEFAULT_MAX_PER_REPO, DEFAULT_MAX_PER_SUBJECT
+
+    overrides = {slug: getattr(args, f"{slug}_count") for slug in TYPE_BY_SLUG}
+    counts, capacity = capacity_driven_counts(
+        source,
+        overrides,
+        max_per_repo=args.max_per_repo or DEFAULT_MAX_PER_REPO,
+        max_per_subject=args.max_per_subject or DEFAULT_MAX_PER_SUBJECT,
+    )
+    specs = [TaskSpec(slug, TYPE_BY_SLUG[slug], counts[slug]) for slug in TYPE_BY_SLUG]
     tasks = planned_tasks(source_number, specs, args.name_style)
+    planned_total = len(tasks)
+    capacity_warning = ""
+    if planned_total > int(capacity["capacity"]):
+        capacity_warning = (
+            f"计划 {planned_total} 条，超过这个仓库的容量 {capacity['capacity']} 条"
+            f"（主体 {capacity['subject_count']} 个 × 每主体 {capacity['max_per_subject']} 条，"
+            f"再和单仓库上限 {capacity['max_per_repo']} 取小）：超出部分大概率被规则 C 判雷同，"
+            "建议按容量砍，或换主体更多的仓库"
+        )
     extra_ignore = {name.strip() for name in args.exclude if name.strip()}
 
     created: list[dict[str, str]] = []
@@ -301,6 +345,9 @@ def main() -> None:
                 "source_number": source_number,
                 "name_style": args.name_style,
                 "copy_exclude_extra": sorted(extra_ignore),
+                "capacity": capacity,
+                "capacity_warning": capacity_warning,
+                "type_counts": counts,
                 "difficulty_rule": "默认整批取地狱；只有确实达不到地狱档硬要求时才降为困难，不出现简单档、不做对半分配",
                 "difficulty_split": difficulty_split,
                 "dry_run": args.dry_run,

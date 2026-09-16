@@ -62,6 +62,7 @@ import batch_prompt_workbook as workbook_lib  # noqa: E402
 
 LEDGER_FILENAME = "repo-theme-ledger.json"
 FEATURE_POINTS_FILENAME = "repo-feature-points.json"
+CAPACITY_FILENAME = "repo-capacity.json"
 MANIFEST_FILENAME = "prompt-generation-manifest.json"
 DEFAULT_MAX_PER_MODULE = 3
 # 单仓库条数上限：平台是在同一个仓库里两两比，铺得越多最近邻越近。
@@ -444,6 +445,92 @@ def build_review_list(records: list[dict], *, neighbors: int = DEFAULT_REVIEW_NE
             ],
         })
     return review
+
+
+def suggest_type_mix(
+    capacity: int,
+    *,
+    max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+) -> dict[str, int]:
+    """按容量给出任务类型配比：新增能力类不超过一半，其余给缺陷修复/重构/理解/工程化。
+
+    依据是实测废弃率——新增能力类（代码生成 + 功能迭代）43%–57%，缺陷修复 14%–29%，
+    重构/理解/工程化 0%。所以整批里有半数是「不需要凭空造能力」的题，风险直接减半。
+    """
+    types = ["代码生成", "功能迭代", "缺陷修复", "代码重构", "代码理解", "工程化"]
+    if capacity <= 0:
+        return {name: 0 for name in types}
+    new_total = min(capacity, int(capacity * max_new_capability_ratio))
+    codegen = (new_total + 1) // 2
+    feature = new_total - codegen
+    rest = capacity - new_total
+    other = {"缺陷修复": 0, "代码重构": 0, "代码理解": 0, "工程化": 0}
+    if rest:
+        if rest < 4:
+            other["缺陷修复"] = rest
+        else:
+            weights = {"缺陷修复": 5, "代码重构": 2, "代码理解": 2, "工程化": 1}
+            total_weight = sum(weights.values())
+            assigned = 0
+            for name, weight in weights.items():
+                share = max(1, int(rest * weight / total_weight))
+                other[name] = share
+                assigned += share
+            order = ["缺陷修复", "代码重构", "代码理解", "工程化"]
+            cursor = 0
+            while assigned > rest and cursor < 200:
+                name = order[cursor % len(order)]
+                if other[name] > 1:
+                    other[name] -= 1
+                    assigned -= 1
+                cursor += 1
+            cursor = 0
+            while assigned < rest and cursor < 200:
+                other[order[cursor % len(order)]] += 1
+                assigned += 1
+                cursor += 1
+    return {"代码生成": codegen, "功能迭代": feature, **other}
+
+
+def compute_capacity(
+    derived: dict[str, set[str]] | None,
+    *,
+    max_per_repo: int = DEFAULT_MAX_PER_REPO,
+    max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+) -> dict[str, object]:
+    """这个仓库最多能出多少条题：按「主体 × 需求模式」的座位数算，不按想要多少条算。
+
+    座位数 = 主体数 × 每主体上限（默认 2）；再和单仓库上限（默认 35）取小。
+    为什么按主体数：平台判的是「主体 + 需求模式」，同一个主体最多容得下 2 条互不雷同的题，
+    第 3 条起必然和前面的撞（实测同主体出到 3 条以上的批次，规则 C 废弃率 35%–44%）。
+
+    所以**先算容量，再决定建几个目录、写几行 Excel**；容量小于想要的数量时，
+    要么砍到容量以内，要么换主体更多的仓库，不要靠写得更花来凑数。
+    """
+    subjects = sorted((derived or {}).keys())
+    subject_slots = len(subjects) * max_per_subject
+    capacity = min(max_per_repo, subject_slots)
+    binding = "subject" if subject_slots < max_per_repo else "repo"
+    if capacity >= 24:
+        verdict = "容量充足"
+    elif capacity >= 12:
+        verdict = "容量一般，按容量出题"
+    else:
+        verdict = "容量偏小：这个仓库撑不起一批，建议换主体更多的仓库"
+    return {
+        "capacity": capacity,
+        "binding_limit": binding,
+        "subject_count": len(subjects),
+        "subjects": subjects,
+        "subject_slots": subject_slots,
+        "max_per_repo": max_per_repo,
+        "max_per_subject": max_per_subject,
+        "type_mix": suggest_type_mix(capacity, max_new_capability_ratio=max_new_capability_ratio),
+        "new_capability_ratio_limit": max_new_capability_ratio,
+        "verdict": verdict,
+        "rule": "容量 = min(单仓库上限, 主体数 × 每主体上限)；同一个「主体 + 需求模式」只坐 1 条题",
+    }
 
 
 def evaluate_corpus(corpus: dict | None) -> dict[str, object]:
@@ -918,6 +1005,7 @@ def build_feature_points(repo: Path, derived: dict[str, set[str]], result: dict)
                 f"同一主体最多 {DEFAULT_MAX_PER_SUBJECT} 条，单仓库最多 {DEFAULT_MAX_PER_REPO} 条，"
                 f"单模式占比不超过 {DEFAULT_MAX_MODE_RATIO:.0%}，"
                 f"新增能力类占比不超过 {DEFAULT_MAX_NEW_CAPABILITY_RATIO:.0%}",
+        "capacity": compute_capacity(derived),
         "modules": [
             {"module": name, "keywords": sorted(keywords)[:40]}
             for name, keywords in sorted(derived.items())
@@ -1018,6 +1106,11 @@ def main() -> None:
     parser.add_argument("--write-feature-points", nargs="?", const="", default=None,
                         help="写一份功能点清单（默认写到父目录的 repo-feature-points.json）；"
                              "出题前先生成，按清单分配题位")
+    parser.add_argument("--capacity", action="store_true",
+                        help="只算这个仓库能出多少条题（主体数 × 每主体上限，再和单仓库上限取小），"
+                             "给出建议类型配比；建仓前先跑这一步决定目录数与 Excel 行数")
+    parser.add_argument("--capacity-file", nargs="?", const="", default=None,
+                        help="把容量结果写成 JSON（默认写到父目录的 repo-capacity.json）")
     parser.add_argument("--version", action="store_true", help="打印闸门版本")
     parser.add_argument("--max-per-module", type=int, default=DEFAULT_MAX_PER_MODULE,
                         help=f"同一模块最多出几条，默认 {DEFAULT_MAX_PER_MODULE}")
@@ -1072,6 +1165,9 @@ def main() -> None:
         if not parent.is_dir():
             raise SystemExit(f"Parent directory does not exist: {parent}")
         items, repair_labels, exempt_labels = load_workbook_prompts(parent, args.workbook)
+    elif args.repo and (args.capacity or args.capacity_file is not None):
+        # 只算容量：建仓前还没有父目录下的工作簿，最多只有一个源码子目录。
+        items = []
     else:
         raise SystemExit("必须提供 --parent 或 --prompts-file 之一")
 
@@ -1087,6 +1183,25 @@ def main() -> None:
     if repo_path:
         base_ledger = merge_ledgers(base_ledger, load_ledger(repo_ledger_path(repo_path)))
     derived = derive_repo_modules(repo_path) if repo_path else {}
+    # 建仓前第一步：先算这个仓库能出几条题，再决定建几个目录、写几行 Excel。
+    if args.capacity or args.capacity_file is not None:
+        capacity = compute_capacity(
+            derived, max_per_repo=args.max_per_repo, max_per_subject=args.max_per_subject,
+            max_new_capability_ratio=args.max_new_capability_ratio,
+        )
+        capacity["gate_version"] = GATE_VERSION
+        if args.capacity_file is not None:
+            target = (
+                Path(args.capacity_file).expanduser().resolve()
+                if args.capacity_file
+                else (parent / CAPACITY_FILENAME if parent else Path(CAPACITY_FILENAME))
+            )
+            target.write_text(
+                json.dumps(capacity, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+            )
+            capacity["capacity_file"] = str(target)
+        print(json.dumps(capacity, ensure_ascii=False, indent=2))
+        return
     # 判词回归：判据不能只靠「我觉得更严了」，必须拿真实判废对量一遍。
     corpus_path: Path | None = None
     if not args.no_calibration:

@@ -662,7 +662,18 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 当父目录初始化时只有一个源代码子目录，而用户要求批量铺成多个本地任务目录时，走这条路。
 
-这条路只做本地动作：把唯一子目录当作原始代码，校验它绑定了 Git，按固定命名和数量在父目录建出 46 个任务目录（每个任务目录固定含 `origin` 与 `workspace`），并在父目录新建 `solo-create-prompts.xlsx`。不创建 GitHub 仓库，不推送远端，不改动源目录。
+这条路只做本地动作：把唯一子目录当作原始代码，校验它绑定了 Git，**先算这个仓库能出多少条题**，再按这个数字建出对应数量的任务目录（每个任务目录固定含 `origin` 与 `workspace`），并在父目录新建 `solo-create-prompts.xlsx`，行数与目录数一致。不创建 GitHub 仓库，不推送远端，不改动源目录。
+
+**建仓数量从 2026-09-16 起由容量决定，不再固定 46 条**：
+
+- 容量 = `min(单仓库上限 35, 主体数 × 每主体上限 2)`。平台是在同一个仓库里两两比对的，
+  一个仓库能承载的题量就这么多；多建出来的目录注定互相判雷同（实测 48/49 条的批次废弃 44%/35%）。
+- 建仓前先跑：`python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --repo "<源目录>" --capacity --capacity-file`
+  会把容量、主体清单与**建议类型配比**写进父目录的 `repo-capacity.json`。
+- 类型配比也跟着容量走：新增能力类（`代码生成` + `功能迭代`）不超过一半，其余给
+  `缺陷修复`、`代码重构`、`代码理解`、`工程化`（实测废弃率分别是 43%–57% 与 0%–29%）。
+- 容量不足时不要硬凑：容量 < 12 就说明这个仓库撑不起一批，直接告诉用户换主体更多的仓库；
+  用户明确要求多于容量时，建仓脚本会照建但把 `capacity_warning` 打出来，并要求走 `--allow-gate-failure` 才写得进工作簿。
 
 这条 route 的细则不再内联在本文件中，必须调用平级 skill：
 
@@ -672,9 +683,9 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 本 skill 在这条 route 里只负责：
 
 - 确认已经唯一命中 `批量建仓路`。
-- 把父目录、源目录、source number、命名规则、默认数量等上下文收束后交给 `$solo-batch-repo-seed`。
-- 批量建仓时要求 `$solo-batch-repo-seed` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替规划目录序号；两类主任务之后按 `缺陷修复`、`代码重构`、`代码理解`、`工程化` 的顺序排列。
-- 默认数量固定为 `代码生成` 18 个、`功能迭代` 18 个、`缺陷修复` 7 个、`代码重构` 1 个、`代码理解` 1 个、`工程化` 1 个，共 46 个。
+- 把父目录、源目录、source number、命名规则、容量结果等上下文收束后交给 `$solo-batch-repo-seed`。
+- 批量建仓时要求 `$solo-batch-repo-seed` 先算容量，再按容量的类型配比建目录；`代码生成` 与 `功能迭代` 仍按每批最多 5 个分块交替规划序号；两类主任务之后按 `缺陷修复`、`代码重构`、`代码理解`、`工程化` 的顺序排列。
+- 默认数量不再固定：总条数 = 容量（≤35），各类型条数 = `repo-capacity.json` 里的 `type_mix`；只有用户显式给出某类数量时才覆盖该类的默认值。
 - 默认命名沿用 `<源项目编号><序号>-<任务类型标识>-<序号>`；只有用户明确要求短编号时才切到 `--name-style dash`。
 - 保留本文件 `2.4` 的 Hard Stop 优先级；如果源项目编号无法判定且用户没给 `--source-number`，先停，不要下发给子 skill。
 - 接收子 skill 返回的建仓结果摘要。
@@ -697,6 +708,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 确认已经唯一命中 `批量首轮路`。
 - 如果父目录下还只有一个源代码子目录，且还没有建出任务目录和工作簿，强制回退到 `批量建仓路`，不要误进本路。
 - 把父目录、Excel 路径和难度规则等上下文收束后交给 `$solo-batch-first-prompts`。
+- 工作簿里有多少行就生成多少条：行数由建仓阶段的容量决定，**不要预设 46 条**，也不要在容量之外补行。
 - 批量生成时要求 `$solo-batch-first-prompts` 按 `代码生成` 5 个、`功能迭代` 5 个分块交替处理；如果某一类 pending 不足 5 个，就处理该类剩余数量后继续切换；两类主任务之后按 `缺陷修复`、`代码重构`、`代码理解`、`工程化` 的顺序处理。
 - 接收子 skill 返回的批量生成摘要。
 - 每个任务的代码来源是它自己目录下的 `origin`；`origin` 不含 git 信息，批量生成阶段不要在这些目录里跑 `git status` / `git diff`。
@@ -1300,6 +1312,8 @@ https://github.com/owner/repo
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --parent "<父目录>" --include-history`（提示词重复硬阈值检查：文字重复率、语义近似度 `<= 20%`，复合需求交叉重叠 0 对）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_difficulty.py --prompts-file "<临时文件>"`（难度下限检查：命中 2 项及以上「过于简单」特征即拒收；批量场景用 `--parent "<父目录>" --task-types 缺陷修复`）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger --write-feature-points`（同仓库主题去重：台账缺失、主体识别为空、主体模式重复、同主体超过 2 条、单仓库超过 35 条、模式占比/句式指纹/新增能力类占比超线都硬拦；同主体或需求模式有交集的进复核清单，并带 `review_list` 最近邻。判词回归默认加载 `tests/fixtures/rule-c-corpus.json`。台账 `repo-theme-ledger.json` 与题位表 `repo-feature-points.json` 落在父目录，同仓库台账落在 `~/.codex/repo-theme-ledgers/`，跨批次、跨父目录继续累计）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --repo "<源目录>" --capacity --capacity-file`（建仓前第一步：算这个仓库能出多少条题 = `min(单仓库上限 35, 主体数 × 每主体上限 2)`，给出建议类型配比，写 `repo-capacity.json`；建目录数与 Excel 行数都按它来）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/create_batch_local_tasks.py --parent "<父目录>" --dry-run`（批量建仓：不传数量时按容量自动分配，计划数超过容量时返回 `capacity_warning`）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --prompt "<最终提示词>"`（写提示词前自动跑上面三道闸，不通过拒写；通过后把闸门版本写进备注并落 `prompt-generation-manifest.json`）
 
 ### 12.3 多项目并行

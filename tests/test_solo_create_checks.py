@@ -250,6 +250,105 @@ class RepoThemeTest(unittest.TestCase):
         )
 
 
+class CapacityTest(unittest.TestCase):
+    """建仓数量必须由容量决定，不能固定 46 条。
+
+    2026-09-16 实测：把 48/49 条压在同一个仓库里，规则 C 废弃 44%/35%。
+    容量 = min(单仓库上限 35, 主体数 × 每主体上限 2)，建目录数与 Excel 行数都按它来。
+    """
+
+    def test_capacity_is_subject_limited(self):
+        from check_repo_theme import compute_capacity
+
+        derived = {f"Comp{index}": {"词"} for index in range(11)}
+        capacity = compute_capacity(derived)
+        self.assertEqual(capacity["capacity"], 22)
+        self.assertEqual(capacity["binding_limit"], "subject")
+        self.assertEqual(capacity["subject_count"], 11)
+
+    def test_capacity_is_repo_limited(self):
+        from check_repo_theme import compute_capacity
+
+        derived = {f"Comp{index}": {"词"} for index in range(40)}
+        capacity = compute_capacity(derived)
+        self.assertEqual(capacity["capacity"], 35)
+        self.assertEqual(capacity["binding_limit"], "repo")
+
+    def test_type_mix_respects_new_capability_ratio(self):
+        from check_repo_theme import compute_capacity
+
+        for subjects in (6, 11, 20, 40):
+            derived = {f"Comp{index}": {"词"} for index in range(subjects)}
+            capacity = compute_capacity(derived)
+            mix = capacity["type_mix"]
+            total = sum(mix.values())
+            self.assertEqual(total, capacity["capacity"], (subjects, mix))
+            new_capability = mix["代码生成"] + mix["功能迭代"]
+            self.assertLessEqual(new_capability, capacity["capacity"] / 2 + 0.5, mix)
+            self.assertGreaterEqual(mix["缺陷修复"], 1, mix)
+
+    def test_tiny_repo_is_flagged(self):
+        from check_repo_theme import compute_capacity
+
+        capacity = compute_capacity({"OnlyComponent": {"词"}})
+        self.assertEqual(capacity["capacity"], 2)
+        self.assertIn("撑不起一批", capacity["verdict"])
+
+    def test_create_batch_defaults_to_capacity(self):
+        """建仓脚本不传数量时按容量建，且计划数不超过容量。"""
+        import tempfile
+
+        import create_batch_local_tasks as seed
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source = parent / "solo-9900003"
+            components = source / "frontend" / "src" / "components"
+            components.mkdir(parents=True)
+            for index in range(4):
+                (components / f"Panel{index}.tsx").write_text(
+                    f"const label = '面板{index}标题'; const tip = '打开面板{index}';"
+                    f"const hint = '删除面板{index}标签';",
+                    encoding="utf-8",
+                )
+            overrides = dict.fromkeys(seed.TYPE_BY_SLUG)
+            counts, capacity = seed.capacity_driven_counts(
+                source, overrides, max_per_repo=35, max_per_subject=2,
+            )
+            self.assertEqual(capacity["capacity"], 8)
+            self.assertEqual(sum(counts.values()), 8)
+            specs = [seed.TaskSpec(slug, seed.TYPE_BY_SLUG[slug], counts[slug])
+                     for slug in seed.TYPE_BY_SLUG]
+            tasks = seed.planned_tasks("9900003", specs, "concat")
+            self.assertEqual(len(tasks), 8)
+            self.assertEqual([task["index"] for task in tasks], list(range(1, 9)))
+
+    def test_capacity_cli_reports_suggestion(self):
+        """--capacity 必须给出容量、主体清单与建议配比（建仓前先看这一步）。"""
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            components = repo / "frontend" / "src" / "components"
+            components.mkdir(parents=True)
+            for index in range(6):
+                (components / f"View{index}.tsx").write_text(
+                    f"const a = '视图{index}列表'; const b = '新增视图{index}';"
+                    f"const c = '删除视图{index}';",
+                    encoding="utf-8",
+                )
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPTS / "check_repo_theme.py"),
+                 "--repo", str(repo), "--capacity"],
+                capture_output=True, text=True, check=True,
+            )
+            payload = json.loads(completed.stdout)
+            self.assertEqual(payload["capacity"], 12)
+            self.assertEqual(len(payload["subjects"]), 6)
+            self.assertEqual(sum(payload["type_mix"].values()), 12)
+
+
 class DifficultyStructureTest(unittest.TestCase):
     def test_write_gate_blocks_without_ledger(self):
         """没有台账就不许把提示词写进工作簿：写入路径自己闸住，不靠人记得跑。"""
