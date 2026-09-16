@@ -111,7 +111,7 @@ DEFAULT_MIN_CANDIDATE_RECALL = 0.95
 # 真实判词语料：平台上被判规则 C 的题面与判废对，随 skill 一起走。
 DEFAULT_CORPUS_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "rule-c-corpus.json"
 # 闸门版本：写进台账与生成清单，跨机器一眼能看出这批题是不是按新版规则出的。
-GATE_VERSION = "2026-09-16-subject-mode"
+GATE_VERSION = "2026-09-16-subject-mode-unique"
 # 同仓库跨批次台账：按仓库归集，不跟着父目录走，避免换一个父目录就重新开始算配额。
 # 需要隔离（例如测试、或想放到共享盘）时用 SOLO_CREATE_REPO_LEDGER_ROOT 覆盖。
 REPO_LEDGER_ROOT = Path(
