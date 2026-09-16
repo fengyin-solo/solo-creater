@@ -115,11 +115,15 @@ DEFAULT_MAX_NEW_CAPABILITY_RATIO = 0.50
 NEW_CAPABILITY_TYPES = {"代码生成", "功能迭代"}
 # 最近邻复核清单每条题列几个邻居
 DEFAULT_REVIEW_NEIGHBORS = 3
-# 同主体两条题的业务对象实词最多能重合几个：重合达到这个数就判「同主体同对象」，换主体。
-# 拿 38 对真实判废对校准：这条把硬拦召回从 52%/35% 提到 57%/59%，
-# 且正好覆盖 cc-9900003 那批人工读出的全部高危对（导航×登录态、死链×检测中断、
-# 导入×重复条目、分类×重名、账号×切换残留）。
-DEFAULT_MIN_SHARED_OBJECT_WORDS = 2
+# 同主体两条题的业务对象实词最多能重合几个。**默认 0 = 不硬拦，只当复核信号。**
+#
+# 2026-09-16 复盘：这条在「每主体 1 条」的口径下是有用的兜底（当时把硬拦召回从 52%/35% 提到
+# 57%/59%），但放开到每主体 2 条之后它会把**全部**同主体对都拦下——对象词是 2/3 字片段，
+# 噪声太大（「一条」「以后」「几个」这类也会被算成对象词），实测 cc-9900003 放宽后 11 对同主体对
+# 100% 命中。而只靠「同主体同家族 + 同模式」这两条，判词召回仍有 37/38 = 97.4%。
+# 所以默认把它降级成复核信号（`review_list` 里给出对象词重合数），需要更严时用
+# `--min-shared-object-words 2` 显式打开。
+DEFAULT_MIN_SHARED_OBJECT_WORDS = 0
 # 判据对真实判废对的召回下限：拿 38 对判废对回测，现在这套口径（同主体或同模式即拦）
 # 是 97.4%，所以下限收到 0.95。低于这个数说明判据被改坏了，不许写表。
 DEFAULT_MIN_CANDIDATE_RECALL = 0.95
@@ -513,6 +517,9 @@ def build_review_list(records: list[dict], *, neighbors: int = DEFAULT_REVIEW_NE
                     "same_subject": features["same_subject"],
                     "shared_modes": features["modes"],
                     "shared_words": features["shared_words"][:6],
+                    # 同主体两条题的对象词重合数：默认不硬拦，但复核时优先看这一项
+                    "object_overlap": len(set(record.get("object_words") or [])
+                                          & set(other.get("object_words") or [])),
                 }
                 for _, other, features in picked
             ],

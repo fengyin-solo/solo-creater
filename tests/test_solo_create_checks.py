@@ -411,7 +411,7 @@ class CapacityTest(unittest.TestCase):
         )
 
     def test_object_axis_blocks_same_subject_when_opt_in(self):
-        """显式放开到每主体 2 条时，对象轴要兜底：对象实词重合就拦。"""
+        """对象轴默认只当复核信号；显式加 --min-shared-object-words 2 才升级成硬拦。"""
         from check_repo_theme import check
 
         derived = {"DeadLinks": {"死链", "检测", "链接", "重试"}}
@@ -421,10 +421,17 @@ class CapacityTest(unittest.TestCase):
             ("b[缺陷修复]", "死链检测断了以后已经查完的结果会丢，失败的那几条只给一句报错、"
                              "看不出是哪个网址，希望允许单独重试并且两处结论一致。"),
         ]
-        result = check(items, derived=derived, max_unknown=99, max_per_subject=2)
-        self.assertFalse(result["ok"], result["violations"])
-        kinds = {v["kind"] for v in result["violations"]}
-        self.assertTrue({"同主体同对象"} <= kinds, result["violations"])
+        default_result = check(items, derived=derived, max_unknown=99)
+        self.assertNotIn(
+            "同主体同对象", {v["kind"] for v in default_result["violations"]},
+            "对象轴默认不该硬拦（噪声太大）",
+        )
+        strict_result = check(items, derived=derived, max_unknown=99,
+                              min_shared_object_words=2)
+        self.assertIn(
+            "同主体同对象", {v["kind"] for v in strict_result["violations"]},
+            "显式打开时对象轴要能拦下来",
+        )
 
 
 class DifficultyStructureTest(unittest.TestCase):
