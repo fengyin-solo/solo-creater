@@ -1290,6 +1290,7 @@ def main() -> None:
             "limits": {
                 "max_per_repo": DEFAULT_MAX_PER_REPO,
                 "max_per_subject": DEFAULT_MAX_PER_SUBJECT,
+                "max_per_mode": DEFAULT_MAX_PER_MODE,
                 "max_mode_ratio": DEFAULT_MAX_MODE_RATIO,
                 "max_ngram_ratio": DEFAULT_MAX_NGRAM_RATIO,
                 "max_new_capability_ratio": DEFAULT_MAX_NEW_CAPABILITY_RATIO,
