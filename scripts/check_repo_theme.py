@@ -121,7 +121,8 @@ REPO_LEDGER_ROOT = Path(
 # 2026-09-16 实测（cc-6600011 那批）：这条只能当**候选提示**，不能当硬拦——
 # 中文按 2/3 字片段切出来的重合里混着「增录 / 希望支」这类拼出来的碎片，
 # 拿它硬拦会把 18 对（其中多数是不同功能点）全挡住。硬拦仍由
-# 「模块识别为空、功能点重复（模块 + 能力大类）、同模块超额、台账缺失」四条负责。
+# 「台账缺失、主体/模式识别为空、同主体超过 1 条、同模式超过 1 条、同主体同对象、
+# 单仓库超容量、句式指纹、新增能力类占比」这几条负责（2026-09-16 复标定后）。
 FEATURE_NEAR_CANDIDATE = 3
 GENERIC_CAPABILITY_WORDS = {
     "目前", "现在", "已有", "原有", "希望", "增加", "新增", "功能", "能力", "可以", "支持",
@@ -401,7 +402,7 @@ def object_content_words(text: str) -> set[str]:
     """题面里的**业务对象实词**：去掉需求模式词、能力词与泛词之后剩下的名词片段。
 
     这是判据的第三根轴。2026-09-16 复盘发现，只锁「主体 + 需求模式」是不够的：
-    同一个主体允许出 2 条，于是每个主体都产出一对近邻；只要这两条落在同一个业务对象上
+    同一个主体一旦出第二条，就多出一对近邻；只要这两条落在同一个业务对象上
     （导航 × 登录态、分类 × 重名、导入 × 重复条目、账号 × 切换残留），平台照样按
     「同为 X 模块的属性扩展」判废，而模式标签不同恰恰让它躲过了前两根轴。
 
@@ -577,10 +578,12 @@ def compute_capacity(
         binding = "subject"
     elif mode_slots <= min(max_per_repo, subject_slots):
         binding = "mode"
-    if capacity >= 24:
+    # 阈值按这个项目的历史仓库标定：常见仓库 8–13 个主体，1 条/主体 就是它们的正常产能，
+    # 所以「小于 8」才需要换仓库，不要因为容量只有 10 出头就劝用户换。
+    if capacity >= 20:
         verdict = "容量充足"
-    elif capacity >= 12:
-        verdict = "容量一般，按容量出题"
+    elif capacity >= 8:
+        verdict = "容量正常，按容量出题"
     else:
         verdict = "容量偏小：这个仓库撑不起一批，建议换主体更多的仓库"
     return {
@@ -759,7 +762,7 @@ def check(
             record["mode"], record["modes"] = mode, modes
             record["subject_mode"] = f"{record['module']}|{mode}" if record["module"] and mode else ""
     # 主体配额 +「主体 + 需求模式」唯一：平台判词里「同为围栏模块的属性扩展，功能点不同」
-    # 也照样作废，所以同一个主体最多 2 条，同一个「主体 + 模式」格子只能有 1 条。
+    # 也照样作废，所以默认同一个主体只能 1 条，同一个「主体 + 模式」格子也只能有 1 条。
     primary_counter: Counter[str] = Counter()
     subject_mode_counter: Counter[str] = Counter()
     mode_counter: Counter[str] = Counter()
@@ -847,7 +850,8 @@ def check(
                        "而且同主体对里 73%–95% 共享仓库实体词，靠换措辞或换模式标签都区分不开。"
                        "超出的必须换主体；这个仓库主体不够就换主体更多的仓库。",
             })
-    # 同主体 + 同业务对象：判据的第三根轴。同主体允许 2 条，但这两条必须落在**不同的对象面**上，
+    # 同主体 + 同业务对象：判据的第三根轴。显式放开到每主体 2 条时（--max-per-subject 2），
+    # 这两条必须落在**不同的对象面**上，
     # 否则平台按「同为 X 模块的 Y 改造」判废——模式标签不同救不回来（实测 cc-9900003 那批
     # 导航 × 登录态、死链 × 检测中断、导入 × 重复条目、分类 × 重名、账号 × 切换残留 五对全中）。
     if min_shared_object_words > 0:
@@ -1251,7 +1255,8 @@ def main() -> None:
                         help="把容量结果写成 JSON（默认写到父目录的 repo-capacity.json）")
     parser.add_argument("--version", action="store_true", help="打印闸门版本")
     parser.add_argument("--max-per-module", type=int, default=DEFAULT_MAX_PER_MODULE,
-                        help=f"同一模块最多出几条，默认 {DEFAULT_MAX_PER_MODULE}")
+                        help="已废弃：2026-09-16 起改由 --max-per-subject（默认 1）与 "
+                             "--max-per-mode（默认 1）约束，这个参数只保留兼容")
     parser.add_argument("--max-per-repo", type=int, default=DEFAULT_MAX_PER_REPO,
                         help=f"单仓库最多出几条（跨批次累计），默认 {DEFAULT_MAX_PER_REPO}")
     parser.add_argument("--max-per-subject", type=int, default=DEFAULT_MAX_PER_SUBJECT,
