@@ -312,8 +312,14 @@ def check(
     for record in records:
         if record["module"]:
             primary_counter[str(record["module"])] += 1
-    # 台账里已有的条目也要算进配额，否则跨批次还会超
+    # 台账里已有的条目也要算进配额，否则跨批次还会超；
+    # 但当前这批里已经有的同一条不要再算一遍——验收/复查时工作簿与台账装的是同一批记录，
+    # 重复计数会把每个模块的条数翻倍（2026-09-16 实测 cc-9900003：3 条被算成 6 条，
+    # 复查时凭空报出 40 处功能点重复与 14 处模块超额）。
+    current_labels = {str(record["label"]) for record in records}
     for entry in (base_ledger or {}).get("entries", []) or []:
+        if str(entry.get("label")) in current_labels:
+            continue
         if entry.get("module"):
             primary_counter[str(entry["module"])] += 1
     violations: list[dict[str, object]] = []
@@ -345,6 +351,8 @@ def check(
         if record["feature_point"] and not record["repair_round"]:
             feature_counter[str(record["feature_point"])] += 1
     for entry in (base_ledger or {}).get("entries", []) or []:
+        if str(entry.get("label")) in current_labels:
+            continue
         point = entry.get("feature_point")
         if point and not entry.get("repair_round"):
             feature_counter[str(point)] += 1

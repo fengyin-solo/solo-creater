@@ -114,6 +114,41 @@ class RepoThemeTest(unittest.TestCase):
         self.assertIn("告警中心", pair["modules"])
         self.assertIn("新增处理机制", pair["capabilities"])
 
+    def test_ledger_repeating_current_batch_is_not_counted_twice(self):
+        """复查同一批时，台账里装的就是这批自己的记录，不能再算一遍。
+
+        2026-09-16 实测 cc-9900003：写完台账后原地复查，每个模块的 3 条被算成 6 条，
+        凭空报出 40 处「功能点重复」与 14 处「模块超额」，把整批题判成不通过。
+        """
+        from check_repo_theme import check
+
+        items = [
+            ("t1", "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单。"),
+            ("t2", "新增围栏准入名单：设备越过不在名单内的围栏时生成一条闯入记录。"),
+        ]
+        # 台账内容与当前这批完全相同（写入台账后立即复查就是这个状态）
+        ledger = {
+            "entries": [
+                {"label": "t1", "module": "告警中心", "feature_point": "告警中心|新增处理机制"},
+                {"label": "t2", "module": "围栏工作台", "feature_point": "围栏工作台|新增处理机制"},
+            ]
+        }
+        result = check(items, max_per_module=3, base_ledger=ledger)
+        self.assertEqual(result["module_counts"].get("告警中心"), 1, result["module_counts"])
+        self.assertEqual(result["module_counts"].get("围栏工作台"), 1, result["module_counts"])
+        self.assertEqual(result["violations"], [])
+        self.assertTrue(result["ok"])
+
+        # 台账里是别的批次的记录时，仍然要算进配额
+        other_ledger = {
+            "entries": [
+                {"label": "old-1", "module": "告警中心", "feature_point": "告警中心|新增入口与共享"},
+                {"label": "old-2", "module": "告警中心", "feature_point": "告警中心|新增清单流程"},
+            ]
+        }
+        result = check(items, max_per_module=3, base_ledger=other_ledger)
+        self.assertEqual(result["module_counts"].get("告警中心"), 3, result["module_counts"])
+
 
 class DifficultyStructureTest(unittest.TestCase):
     def test_write_gate_blocks_without_ledger(self):
