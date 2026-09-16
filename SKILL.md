@@ -489,6 +489,20 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
   没有台账（`--require-ledger`）或功能点重复都直接不通过。批量出题前先按台账把功能点排好，
   再按清单分配题位，不要先写完 46 条再去查重。
   **硬拦必须清零，候选对要逐对人工复核**，认下同型就换题材。
+- **这条规则现在有机械闸门（2026-09-16 起）**：提示词写进工作簿走的是
+  `batch_prompt_workbook.py update`，它会在落表前把整批内容送进三道闸——同仓库主题去重、
+  难度下限、提示词查重；任何一道不过就**直接拒写**，只打印违规清单，只有显式加
+  `--allow-gate-failure` 才能强写。2026-09-16 的 cc-6600025 那批就是在「规则已推、闸门没人跑」
+  的缝里生成的（同模块塞了 7 条、4 个模块超配额），所以别再依赖「记得跑」。
+  - 写入成功后 `备注` 会带上 `生成规则: <闸门版本>；闸门: ok`，父目录同时落一份
+    `prompt-generation-manifest.json`（闸门版本、模块分布、违规清单、skill 版本），跨机器可追溯。
+  - `update` 还会校验 skill 是否落后于远端：落后就拒写并要求先 `git pull --ff-only`
+    （确实要用当前版本加 `--skip-version-check`）。
+- **台账按仓库累计，不跟着父目录走**：父目录台账之外还有一份同仓库台账
+  （默认 `~/.codex/repo-theme-ledgers/<owner-repo>.json`，可用
+  `SOLO_CREATE_REPO_LEDGER_ROOT` 改位置），换一个父目录继续出题时配额与功能点照样累计。
+  出题前先生成功能点清单：`check_repo_theme.py --parent "<父目录>" --repo "<origin>" --write-ledger --write-feature-points`
+  会写出 `repo-feature-points.json`（模块词典 + 已占用的功能点与题位），按它分配题位再写题面。
 - 同模块出题配额是硬约束：同一模块（告警中心、围栏工作台、地图与图层、健康诊断，
   或本项目里的录制面板、脑状态面板、频段能量面板等）最多 3 条，超过就必须换模块或换题材；
   平台是拿先提交的那条当基准、后提交的判废弃，所以同仓库要一次性全局去重，不要分批试探。
@@ -1258,7 +1272,8 @@ https://github.com/owner/repo
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --parent "<父目录>" --include-history`（提示词重复硬阈值检查：文字重复率、语义近似度 `<= 20%`，复合需求交叉重叠 0 对）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_difficulty.py --prompts-file "<临时文件>"`（难度下限检查：命中 2 项及以上「过于简单」特征即拒收；批量场景用 `--parent "<父目录>" --task-types 缺陷修复`）
-- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --write-ledger`（同仓库主题去重：同模块超过 3 条硬拦，同模块同大类进候选清单；台账 `repo-theme-ledger.json` 跨批次复用）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger --write-feature-points`（同仓库主题去重：台账缺失、模块识别为空、功能点重复、同模块超过 3 条都硬拦；同模块同大类与能力短语近似的进候选清单。台账 `repo-theme-ledger.json` 与功能点清单 `repo-feature-points.json` 落在父目录，同仓库台账落在 `~/.codex/repo-theme-ledgers/`，跨批次、跨父目录继续累计）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --prompt "<最终提示词>"`（写提示词前自动跑上面三道闸，不通过拒写；通过后把闸门版本写进备注并落 `prompt-generation-manifest.json`）
 
 ### 12.3 多项目并行
 

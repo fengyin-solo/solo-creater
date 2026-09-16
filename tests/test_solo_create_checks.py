@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -115,6 +116,104 @@ class RepoThemeTest(unittest.TestCase):
 
 
 class DifficultyStructureTest(unittest.TestCase):
+    def test_write_gate_blocks_without_ledger(self):
+        """没有台账就不许把提示词写进工作簿：写入路径自己闸住，不靠人记得跑。"""
+        import os
+        import tempfile
+
+        from batch_prompt_workbook import run_write_gates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            os.environ["SOLO_CREATE_REPO_LEDGER_ROOT"] = str(parent / "repo-ledgers")
+            records = [{
+                "子文件夹名称": "66000111-codegen-1", "任务类型": "代码生成",
+                "提示词": "新增录制列表分页：历史录制很多时按页浏览，翻页后保持原有顺序。",
+                "提示词类型": "主提示词", "备注": "",
+            }]
+            gate = run_write_gates(parent, records, repo=None)
+            self.assertFalse(gate["ok"])
+            self.assertTrue(
+                any("台账缺失" in item for item in gate["problems"]), gate["problems"]
+            )
+
+    def test_write_gate_blocks_module_over_quota_and_duplicate_feature_point(self):
+        """同一模块第 4 条、同一功能点第 2 条都要被写入闸拦下。"""
+        import os
+        import tempfile
+
+        from batch_prompt_workbook import run_write_gates
+
+        prompts = [
+            "新增录制列表分页：历史录制很多时按页浏览，翻页后保持原有顺序。",
+            "新增录制列表筛选：按通道过滤历史录制，找不到时给出空态提示。",
+            "新增录制列表排序：把历史录制按名称排序，排序后仍能点开回看。",
+            "新增录制列表收藏：把常用录制标记成收藏并排在最前面。",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            os.environ["SOLO_CREATE_REPO_LEDGER_ROOT"] = str(parent / "repo-ledgers")
+            (parent / "repo-theme-ledger.json").write_text(
+                json.dumps({"gate_version": "test", "entries": []}), encoding="utf-8",
+            )
+            # 造一个只含 RecordingPanel 的仓库，让四条题面都落到同一个模块上
+            components = parent / "frontend" / "src" / "components"
+            components.mkdir(parents=True)
+            (components / "RecordingPanel.tsx").write_text(
+                "const a = '历史录制'; const b = '开始录制'; const c = '删除录制记录';"
+                "const d = '回看录制'; const e = '录制列表';",
+                encoding="utf-8",
+            )
+            records = [
+                {"子文件夹名称": f"6600011{i + 1}-codegen-{i + 1}", "任务类型": "代码生成",
+                 "提示词": prompt, "提示词类型": "主提示词", "备注": ""}
+                for i, prompt in enumerate(prompts)
+            ]
+            gate = run_write_gates(
+                parent, records, repo=parent, max_per_module=3,
+            )
+            self.assertFalse(gate["ok"])
+            self.assertTrue(
+                any("模块超额" in item or "功能点重复" in item for item in gate["problems"]),
+                gate["problems"],
+            )
+
+    def test_write_gate_passes_and_records_gate_tag(self):
+        """合法提示词要写得进去，并把生成规则版本落到备注与生成清单里。"""
+        import os
+        import tempfile
+
+        from openpyxl import Workbook
+
+        import batch_prompt_workbook as workbook_lib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            os.environ["SOLO_CREATE_REPO_LEDGER_ROOT"] = str(parent / "repo-ledgers")
+            workbook = parent / "solo-create-prompts.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "prompts"
+            ws.append(list(workbook_lib.HEADERS))
+            ws.append(["66000111-codegen-1", "代码生成", 1, "", "主提示词", "待生成", "", ""])
+            wb.save(workbook)
+            (parent / "repo-theme-ledger.json").write_text(
+                json.dumps({"gate_version": "test", "entries": []}), encoding="utf-8",
+            )
+            result = workbook_lib.update(
+                parent, None, "66000111-codegen-1",
+                "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单，"
+                "没有值班人时回落到公共清单。",
+                "", None, None, skip_version_check=True,
+            )
+            self.assertTrue(result["gate"]["ok"], result["gate"])
+            self.assertTrue(result["manifest"])
+            records = workbook_lib.read_workbook(workbook)
+            self.assertIn("生成规则", str(records[0].get("备注") or ""))
+            manifest = json.loads(Path(result["manifest"]).read_text(encoding="utf-8"))
+            self.assertTrue(manifest["gate_ok"])
+            self.assertTrue(manifest["gate_version"])
+
     def test_difficulty_default_covers_all_task_types(self):
         """难度检查默认覆盖全部任务类型：33 号是代码生成，只查缺陷修复会漏掉它。"""
         from check_prompt_difficulty import DEFAULT_TASK_TYPES

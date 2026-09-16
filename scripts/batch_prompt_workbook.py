@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,10 @@ HEADERS = [
     "更新时间",
 ]
 DEFAULT_WORKBOOK = "solo-create-prompts.xlsx"
+# 写入前的闸门：这三道不通过就不许把提示词写进工作簿（除非显式 --allow-gate-failure）
+GATE_TAG = "生成规则"
+MANIFEST_FILENAME = "prompt-generation-manifest.json"
+EXEMPT_TASK_TYPES = {"工程化", "代码理解", "代码重构"}
 NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 
@@ -243,6 +248,175 @@ def sort_pending_for_batch_generation(pending: list[dict[str, str]]) -> list[dic
     return ordered
 
 
+def detect_repo(parent: Path) -> Path | None:
+    """父目录里任意任务目录下的 origin 就是这道题的仓库，用来派生模块词典。"""
+    try:
+        children = sorted(path for path in parent.iterdir() if path.is_dir())
+    except OSError:
+        return None
+    for child in children:
+        origin = child / "origin"
+        if origin.is_dir():
+            return origin
+    return None
+
+
+def skill_freshness(skill_root: Path | None = None) -> dict:
+    """skill 是否落后于它的 origin：落后就拒跑，避免拿旧规则出题。
+
+    2026-09-16：cc-6600025 那批是在新规则推上去 40 分钟后生成的，然而闸门只写在
+    SKILL.md 里、写入脚本不校验，脏数据照样落表。这里把「先更新 skill」变成机械前置。
+    """
+    root = Path(skill_root or Path(__file__).resolve().parents[1])
+    info: dict[str, object] = {"skill_root": str(root)}
+    try:
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=15)
+        branch = subprocess.run(["git", "-C", str(root), "rev-parse", "--abbrev-ref", "HEAD"],
+                                capture_output=True, text=True, timeout=15)
+        info["head"] = (head.stdout or "").strip()
+        info["branch"] = (branch.stdout or "").strip() or "HEAD"
+        if head.returncode != 0:
+            info["checked"] = False
+            return info
+        behind = subprocess.run(
+            ["git", "-C", str(root), "rev-list", "--count", f"HEAD..origin/{info['branch']}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if behind.returncode != 0:
+            info["checked"] = False
+            info["note"] = "没有远端跟踪分支，跳过版本比较"
+            return info
+        info["checked"] = True
+        info["behind"] = int((behind.stdout or "0").strip() or 0)
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:  # noqa: BLE001
+        info["checked"] = False
+        info["note"] = f"版本检查跳过：{exc}"
+    return info
+
+
+def run_write_gates(
+    parent: Path,
+    records: list[dict[str, str]],
+    *,
+    repo: Path | None,
+    max_per_module: int = 3,
+) -> dict:
+    """写表前的三道闸：同仓库主题去重、难度下限、提示词查重。
+
+    三道都跑在「这份工作簿加上本次要写的那条提示词」之后的整批内容上，
+    任何一道不通过就返回 ok=False，由调用方决定拒写还是显式放行。
+    """
+    from check_prompt_dedup import check as dedup_check
+    from check_prompt_difficulty import JUSTIFICATION_PREFIX
+    from check_prompt_difficulty import check as difficulty_check
+    from check_repo_theme import (
+        GATE_VERSION,
+        LEDGER_FILENAME,
+        check as theme_check,
+        derive_repo_modules,
+        load_ledger,
+        merge_ledgers,
+        repo_ledger_path,
+    )
+
+    items: list[tuple[str, str]] = []
+    repair_labels: set[str] = set()
+    exempt_labels: set[str] = set()
+    justifications: dict[str, str] = {}
+    for record in records:
+        prompt = str(record.get("提示词") or "").strip()
+        if not prompt:
+            continue
+        task_type = str(record.get("任务类型") or "").strip()
+        label = f"{record.get('子文件夹名称') or '未命名'}[{task_type}]"
+        items.append((label, prompt))
+        if task_type in {"Bug 修复", "Bug修复"} or str(record.get("提示词类型") or "").startswith("修复"):
+            repair_labels.add(label)
+        if task_type in EXEMPT_TASK_TYPES:
+            exempt_labels.add(label)
+        note = str(record.get("备注") or "").strip()
+        if note.startswith(JUSTIFICATION_PREFIX):
+            justifications[label] = note
+
+    derived = derive_repo_modules(repo) if repo else {}
+    base_ledger = merge_ledgers(
+        load_ledger(parent / LEDGER_FILENAME),
+        load_ledger(repo_ledger_path(repo)) if repo else {},
+    )
+    theme = theme_check(
+        items,
+        max_per_module=max_per_module,
+        base_ledger=base_ledger,
+        derived=derived,
+        repair_labels=repair_labels,
+        exempt_labels=exempt_labels,
+        require_ledger=True,
+        ledger_present=(parent / LEDGER_FILENAME).exists(),
+        max_unknown=0,
+    )
+    defect_labels = {label for label, _ in items if "缺陷修复" in label or "Bug 修复" in label}
+    difficulty = difficulty_check(
+        items, 2,
+        defect_structure=True,
+        defect_labels=defect_labels,
+        justifications=justifications,
+    )
+    dedup = dedup_check(items, 0.2)
+
+    problems: list[str] = []
+    for violation in theme.get("violations", []) or []:
+        kind = violation.get("kind")
+        detail = violation.get("feature_point") or violation.get("module") or violation.get("labels") or ""
+        problems.append(f"主题去重未通过：{kind} {detail}".strip())
+    for violation in difficulty.get("violations", []) or []:
+        problems.append(f"难度下限未通过：{violation.get('label')} {'；'.join(violation.get('reasons') or [])}")
+    for violation in dedup.get("violations", []) or []:
+        problems.append(
+            f"提示词查重未通过：{violation.get('left')} 与 {violation.get('right')} "
+            f"{violation.get('kind')} {violation.get('score')}"
+        )
+    return {
+        "ok": not problems,
+        "gate_version": GATE_VERSION,
+        "problems": problems,
+        "theme": {
+            "ok": theme.get("ok"),
+            "module_counts": theme.get("module_counts"),
+            "violations": theme.get("violations"),
+            "candidate_pairs": (theme.get("candidate_pairs") or [])[:20],
+            "unknown_labels": theme.get("unknown_labels"),
+        },
+        "difficulty": {"ok": difficulty.get("ok"), "violations": difficulty.get("violations"),
+                       "needs_review": difficulty.get("needs_review")},
+        "dedup": {"ok": dedup.get("ok"), "violations": dedup.get("violations")},
+    }
+
+
+def write_generation_manifest(
+    parent: Path,
+    *,
+    workbook: Path,
+    repo: Path | None,
+    gate: dict,
+    skill: dict,
+) -> Path:
+    """把这一批的生成规则版本与闸门结论落一份清单，跨机器可追溯。"""
+    path = parent / MANIFEST_FILENAME
+    payload = {
+        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "workbook": str(workbook),
+        "repo": str(repo) if repo else "",
+        "gate_version": gate.get("gate_version"),
+        "gate_ok": gate.get("ok"),
+        "module_counts": (gate.get("theme") or {}).get("module_counts"),
+        "violations": gate.get("problems") or [],
+        "skill": skill,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def scan(parent: Path, workbook: str | None) -> dict[str, object]:
     path = workbook_path(parent, workbook)
     records = read_workbook(path)
@@ -284,7 +458,11 @@ def update(
     note: str,
     status: str | None,
     prompt_type: str | None,
-) -> dict[str, str]:
+    *,
+    repo: Path | None = None,
+    allow_gate_failure: bool = False,
+    skip_version_check: bool = False,
+) -> dict:
     parsed = parse_folder_name(folder)
     if not parsed:
         raise SystemExit(f"Cannot parse folder name: {folder}")
@@ -340,8 +518,52 @@ def update(
         row["备注"] = note
         row["更新时间"] = now
         records.append(row)
+
+    gate: dict = {}
+    manifest = None
+    if prompt is not None:
+        repo_path = repo or detect_repo(parent)
+        skill = {} if skip_version_check else skill_freshness()
+        if skill.get("checked") and int(skill.get("behind") or 0) > 0:
+            raise SystemExit(
+                "solo-create 这个 skill 落后于远端 "
+                f"{skill.get('behind')} 个提交（{skill.get('skill_root')}），先 git pull --ff-only 再出题；"
+                "确实要用当前版本就加 --skip-version-check"
+            )
+        gate = run_write_gates(parent, records, repo=repo_path)
+        gate["skill"] = skill
+        if not gate["ok"] and not allow_gate_failure:
+            print(json.dumps({
+                "ok": False,
+                "error": "写入前的闸门没有通过，这条提示词没有写进工作簿",
+                "gate_version": gate.get("gate_version"),
+                "problems": gate.get("problems"),
+                "theme": gate.get("theme"),
+                "difficulty": gate.get("difficulty"),
+                "dedup": gate.get("dedup"),
+                "hint": "先按上面的违规项换模块 / 换能力点 / 换角度重写；"
+                        "确实要先落表再加 --allow-gate-failure，但被平台判废弃的记录不可返修",
+            }, ensure_ascii=False, indent=2))
+            raise SystemExit(1)
+        tag = f"{GATE_TAG}: {gate.get('gate_version')}；闸门: {'ok' if gate['ok'] else '强制放行'}"
+        row["备注"] = f"{row.get('备注') or ''}；{tag}".strip("；") if row.get("备注") else tag
+        manifest = write_generation_manifest(
+            parent, workbook=path, repo=repo_path, gate=gate, skill=skill,
+        )
+
     write_workbook(path, records)
-    return {"workbook": str(path), "folder": folder, "status": row["状态"]}
+    result: dict = {"workbook": str(path), "folder": folder, "status": row["状态"]}
+    if gate:
+        result["gate"] = {
+            "ok": gate["ok"],
+            "gate_version": gate.get("gate_version"),
+            "problems": gate.get("problems"),
+            "module_counts": (gate.get("theme") or {}).get("module_counts"),
+            "candidate_pairs": (gate.get("theme") or {}).get("candidate_pairs"),
+            "needs_review": (gate.get("difficulty") or {}).get("needs_review"),
+        }
+        result["manifest"] = str(manifest) if manifest else ""
+    return result
 
 
 def parse_number_range(value: str | None) -> tuple[int, int] | None:
@@ -424,6 +646,11 @@ def main() -> None:
     parser.add_argument("--status")
     parser.add_argument("--range")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--repo", help="仓库路径；默认自动找父目录下任意任务目录的 origin")
+    parser.add_argument("--allow-gate-failure", action="store_true",
+                        help="闸门不通过也强行写表（默认拒写；被平台判废弃的记录不可返修，慎用）")
+    parser.add_argument("--skip-version-check", action="store_true",
+                        help="跳过「skill 是否落后于远端」的检查")
     args = parser.parse_args()
 
     if args.command == "locate-project":
@@ -439,7 +666,12 @@ def main() -> None:
     elif args.command == "update":
         if not args.folder:
             raise SystemExit("update requires --folder")
-        result = update(parent, args.workbook, args.folder, args.prompt, args.note, args.status, args.prompt_type)
+        result = update(
+            parent, args.workbook, args.folder, args.prompt, args.note, args.status, args.prompt_type,
+            repo=Path(args.repo).expanduser().resolve() if args.repo else None,
+            allow_gate_failure=args.allow_gate_failure,
+            skip_version_check=args.skip_version_check,
+        )
     else:
         result = pick(parent, args.workbook, args.range, args.limit)
     print(json.dumps(result, ensure_ascii=False, indent=2))

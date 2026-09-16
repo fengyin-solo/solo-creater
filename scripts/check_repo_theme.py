@@ -29,7 +29,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
@@ -39,7 +41,27 @@ import batch_prompt_workbook as workbook_lib  # noqa: E402
 
 
 LEDGER_FILENAME = "repo-theme-ledger.json"
+FEATURE_POINTS_FILENAME = "repo-feature-points.json"
+MANIFEST_FILENAME = "prompt-generation-manifest.json"
 DEFAULT_MAX_PER_MODULE = 3
+# 闸门版本：写进台账与生成清单，跨机器一眼能看出这批题是不是按新版规则出的。
+GATE_VERSION = "2026-09-16-feature-points"
+# 同仓库跨批次台账：按仓库归集，不跟着父目录走，避免换一个父目录就重新开始算配额。
+# 需要隔离（例如测试、或想放到共享盘）时用 SOLO_CREATE_REPO_LEDGER_ROOT 覆盖。
+REPO_LEDGER_ROOT = Path(
+    os.environ.get("SOLO_CREATE_REPO_LEDGER_ROOT", "~/.codex/repo-theme-ledgers")
+).expanduser()
+# 同模块内「功能点近似」的判据：能力短语里实词重合的数量。
+# 2026-09-16 实测（cc-6600011 那批）：这条只能当**候选提示**，不能当硬拦——
+# 中文按 2/3 字片段切出来的重合里混着「增录 / 希望支」这类拼出来的碎片，
+# 拿它硬拦会把 18 对（其中多数是不同功能点）全挡住。硬拦仍由
+# 「模块识别为空、功能点重复（模块 + 能力大类）、同模块超额、台账缺失」四条负责。
+FEATURE_NEAR_CANDIDATE = 3
+GENERIC_CAPABILITY_WORDS = {
+    "目前", "现在", "已有", "原有", "希望", "增加", "新增", "功能", "能力", "可以", "支持",
+    "用户", "系统", "界面", "列表", "数据", "时候", "之后", "以及", "并且", "同时", "这个",
+    "那个", "一个", "把", "在", "与", "和", "了", "上", "下", "里", "按", "能", "也", "都",
+}
 
 # 从仓库源码派生模块词典时用到的中文串；这些词在每个组件里都会出现，不能拿来定模块。
 GENERIC_TOKENS = {
@@ -101,18 +123,27 @@ def detect_derived_module(text: str, derived: dict[str, set[str]], *, min_hits: 
 
     2026-09-16 起按「出现次数」而不是「不同词个数」算：一条题里反复提到同一个核心词
     （例如「录制」出现三次）已经足够说明它改的是哪一块，不必强求两个不同关键词。
+    够不到 2 次时再退一步：取命中最多的那个模块当**弱命中**（分数 1），
+    避免「新增波形配色」这种只提一次模块名的题被判成模块未识别而整条写不进去。
     """
     best_name, best_score = "", 0
+    weak_name, weak_score = "", 0
     for name, tokens in derived.items():
         hits = [token for token in tokens if token in text]
         if not hits:
             continue
         score = sum(text.count(token) for token in hits)
         if score < min_hits:
+            # 弱命中取分数最高的那个，不能按遍历顺序取第一个，否则会把「波形」类的题
+            # 归到字母序最前的组件上
+            if score > weak_score:
+                weak_name, weak_score = name, score
             continue
         if score > best_score:
             best_name, best_score = name, score
-    return best_name, best_score
+    if best_score:
+        return best_name, best_score
+    return weak_name, weak_score
 
 # 模块词典：命中即算落在该模块；一条题可以落在多个模块里（例如告警中心 + 监控大屏）。
 MODULE_LEXICON: dict[str, tuple[str, ...]] = {
@@ -213,9 +244,33 @@ def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
         "capabilities": detect_capabilities(text),
         "skeletons": detect_skeletons(text),
         "feature_point": feature_point(primary, detect_capabilities(text)),
+        "capability_words": sorted(capability_content_words(text)),
         "repair_round": is_repair,
         "module_exempt": exempt,
     }
+
+
+def capability_phrase(text: str) -> str:
+    """题面里的能力短语：从「新增 / 希望增加 / 希望它能…」起，到冒号或 24 字为止。"""
+    match = re.search(r"(?:新增|希望增加|希望它能|希望改成|希望)[^：:]{0,24}", text or "")
+    return match.group(0) if match else (text or "")[:24]
+
+
+def capability_content_words(text: str) -> set[str]:
+    """能力短语里的实词（2 字与 3 字片段，去掉泛词），用来判断两条题是不是同一个功能点。
+
+    2026-09-16 按 cc-6600011 的判词标定：同模块里「能力短语实词重合 >= 2」的对共 20 对，
+    其中 16 对含平台判废弃的记录（约八成）；重合 >= 3 的 13 对里 10 对含废弃。
+    所以重合 >= 3 直接硬拦，重合 2 进候选清单。
+    """
+    words: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", capability_phrase(text)):
+        for size in (2, 3):
+            for index in range(len(run) - size + 1):
+                word = run[index:index + size]
+                if word not in GENERIC_CAPABILITY_WORDS:
+                    words.add(word)
+    return words
 
 
 def feature_point(module: str, capabilities: list[str]) -> str:
@@ -320,6 +375,20 @@ def check(
             shared_modules = set(record["modules"]) & set(other["modules"])
             shared_capabilities = set(record["capabilities"]) & set(other["capabilities"])
             shared_skeletons = set(record["skeletons"]) & set(other["skeletons"])
+            shared_words = set(record["capability_words"]) & set(other["capability_words"])
+            if shared_modules and len(shared_words) >= FEATURE_NEAR_CANDIDATE:
+                candidates.append({
+                    "a": other["label"],
+                    "b": record["label"],
+                    "modules": sorted(shared_modules),
+                    "capabilities": sorted(shared_capabilities),
+                    "skeletons": sorted(shared_skeletons),
+                    "shared_words": sorted(shared_words)[:6],
+                    "why": f"同模块里两条题的能力短语有 {len(shared_words)} 个实词重合，"
+                           "平台按规则 C 判语义雷同且不可返修；逐对读一遍，"
+                           "像同一个功能点就换模块、换能力点，或并成一条",
+                })
+                continue
             if not shared_modules or not shared_capabilities:
                 continue
             candidates.append({
@@ -328,6 +397,7 @@ def check(
                 "modules": sorted(shared_modules),
                 "capabilities": sorted(shared_capabilities),
                 "skeletons": sorted(shared_skeletons),
+                "shared_words": sorted(shared_words)[:6],
                 "why": "同模块里出同类能力，平台按规则 C 判语义雷同且不可返修；换模块或换题材",
             })
 
@@ -360,6 +430,118 @@ def load_prompt_file(path: Path) -> list[tuple[str, str]]:
         if text:
             items.append((f"{path.name}#{index}", text))
     return items
+
+
+def repo_slug(repo: Path) -> str:
+    """仓库台账的稳定文件名：优先用 origin 远端地址，取不到就用绝对路径。"""
+    remote = ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=15,
+        )
+        remote = (result.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        remote = ""
+    base = remote or str(Path(repo).expanduser().resolve())
+    base = base.replace("https://github.com/", "").replace("git@github.com:", "")
+    base = re.sub(r"\.git$", "", base)
+    slug = re.sub(r"[^0-9A-Za-z._-]+", "-", base).strip("-").lower()
+    return slug or "unknown-repo"
+
+
+def repo_ledger_path(repo: Path) -> Path:
+    """同仓库跨批次台账：不跟着父目录走，换一个父目录也继续算配额。"""
+    return REPO_LEDGER_ROOT / f"{repo_slug(repo)}.json"
+
+
+def load_ledger(path: Path | None) -> dict:
+    if not path or not Path(path).exists():
+        return {}
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def merge_ledgers(*ledgers: dict | None) -> dict:
+    """把父目录台账与仓库台账合并：按 label 去重，配额与功能点都累计。"""
+    merged: dict[str, dict] = {}
+    for ledger in ledgers:
+        for entry in (ledger or {}).get("entries", []) or []:
+            merged[str(entry.get("label"))] = entry
+    return {"entries": list(merged.values())}
+
+
+def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | None = None) -> Path:
+    path = repo_ledger_path(repo)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = merge_ledgers(load_ledger(path))
+    merged = {str(item.get("label")): item for item in existing.get("entries", [])}
+    for entry in entries:
+        merged[str(entry.get("label"))] = entry
+    payload = {
+        "gate_version": GATE_VERSION,
+        "repo": str(Path(repo).expanduser().resolve()),
+        "entries": list(merged.values()),
+    }
+    if gate_result is not None:
+        payload["module_counts"] = gate_result.get("module_counts", {})
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def build_feature_points(repo: Path, derived: dict[str, set[str]], result: dict) -> dict:
+    """出题前先落一份功能点清单：模块（含关键词）+ 每个模块已占用的功能点与题位。"""
+    occupied: dict[str, list[str]] = {}
+    for entry in result.get("items", []) or []:
+        point = entry.get("feature_point") or ""
+        if point:
+            occupied.setdefault(str(point), []).append(str(entry.get("label")))
+    return {
+        "gate_version": GATE_VERSION,
+        "repo": str(Path(repo).expanduser().resolve()),
+        "rule": "每条题面必须落回一个模块，同一功能点（模块 + 能力大类）只出 1 条，同一模块最多 3 条",
+        "modules": [
+            {"module": name, "keywords": sorted(keywords)[:40]}
+            for name, keywords in sorted(derived.items())
+        ],
+        "occupied_feature_points": occupied,
+        "module_counts": result.get("module_counts", {}),
+        "unknown_labels": result.get("unknown_labels", []),
+    }
+
+
+def run_gate(
+    parent: Path,
+    *,
+    workbook: str | None = None,
+    repo: Path | None = None,
+    require_ledger: bool = True,
+    max_per_module: int = DEFAULT_MAX_PER_MODULE,
+    max_unknown: int = 0,
+) -> dict:
+    """写入路径专用的整批闸门：读工作簿 → 派生模块 → 合并父目录与仓库台账 → 出结论。"""
+    workbook_name = workbook or workbook_lib.DEFAULT_WORKBOOK
+    items, repair_labels, exempt_labels = load_workbook_prompts(parent, workbook_name)
+    derived = derive_repo_modules(repo) if repo else {}
+    merged = merge_ledgers(load_ledger(parent / LEDGER_FILENAME),
+                           load_ledger(repo_ledger_path(repo)) if repo else {})
+    result = check(
+        items,
+        max_per_module=max_per_module,
+        base_ledger=merged,
+        derived=derived,
+        repair_labels=repair_labels,
+        exempt_labels=exempt_labels,
+        require_ledger=require_ledger,
+        ledger_present=(parent / LEDGER_FILENAME).exists(),
+        max_unknown=max_unknown,
+    )
+    result["gate_version"] = GATE_VERSION
+    result["workbook"] = str((parent / workbook_name).resolve())
+    result["repo"] = str(repo) if repo else ""
+    return result
 
 
 def load_workbook_prompts(parent: Path, workbook_name: str) -> list[tuple[str, str]]:
@@ -395,11 +577,18 @@ def main() -> None:
     parser.add_argument("--write-ledger", action="store_true", help="把本次分类结果写进台账")
     parser.add_argument("--require-ledger", action="store_true",
                         help="批量出题的硬前置：台账不存在就直接判不通过")
+    parser.add_argument("--write-feature-points", nargs="?", const="", default=None,
+                        help="写一份功能点清单（默认写到父目录的 repo-feature-points.json）；"
+                             "出题前先生成，按清单分配题位")
+    parser.add_argument("--version", action="store_true", help="打印闸门版本")
     parser.add_argument("--max-per-module", type=int, default=DEFAULT_MAX_PER_MODULE,
                         help=f"同一模块最多出几条，默认 {DEFAULT_MAX_PER_MODULE}")
     parser.add_argument("--max-unknown", type=int, default=0,
                         help="允许几条题面识别不到模块，默认 0（一条都不许）")
     args = parser.parse_args()
+    if args.version:
+        print(json.dumps({"gate_version": GATE_VERSION, "rule": "同仓库主题去重"}, ensure_ascii=False))
+        return
 
     parent: Path | None = None
     repair_labels: set[str] = set()
@@ -421,7 +610,11 @@ def main() -> None:
     if ledger_path and ledger_path.exists():
         base_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
 
-    derived = derive_repo_modules(Path(args.repo).expanduser().resolve()) if args.repo else {}
+    repo_path = Path(args.repo).expanduser().resolve() if args.repo else None
+    # 台账按仓库累计：父目录台账 + 同仓库跨批次台账，两边都算进配额
+    if repo_path:
+        base_ledger = merge_ledgers(base_ledger, load_ledger(repo_ledger_path(repo_path)))
+    derived = derive_repo_modules(repo_path) if repo_path else {}
     result = check(
         items,
         max_per_module=args.max_per_module,
@@ -433,6 +626,7 @@ def main() -> None:
         ledger_present=bool(ledger_path and ledger_path.exists()),
         max_unknown=args.max_unknown,
     )
+    result["gate_version"] = GATE_VERSION
 
     if args.write_ledger and ledger_path:
         merged: dict[str, dict] = {}
@@ -442,6 +636,7 @@ def main() -> None:
             merged[str(entry["label"])] = entry
         ledger_path.write_text(
             json.dumps({
+                "gate_version": GATE_VERSION,
                 "rule": result["rule"],
                 "max_per_module": result["max_per_module"],
                 "module_counts": result["module_counts"],
@@ -450,6 +645,20 @@ def main() -> None:
             encoding="utf-8",
         )
         result["ledger"] = str(ledger_path)
+        if repo_path:
+            result["repo_ledger"] = str(
+                write_repo_ledger(repo_path, list(merged.values()), gate_result=result)
+            )
+
+    if args.write_feature_points is not None:
+        target = (
+            Path(args.write_feature_points).expanduser().resolve()
+            if args.write_feature_points
+            else (parent / FEATURE_POINTS_FILENAME if parent else Path(FEATURE_POINTS_FILENAME))
+        )
+        payload = build_feature_points(repo_path or Path.cwd(), derived, result)
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        result["feature_points_file"] = str(target)
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["ok"]:
