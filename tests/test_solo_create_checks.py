@@ -269,12 +269,12 @@ class CapacityTest(unittest.TestCase):
         self.assertEqual(capacity["subject_count"], 11)
 
     def test_capacity_is_mode_limited_by_default(self):
-        from check_repo_theme import compute_capacity
+        from check_repo_theme import DEMAND_MODE_LEXICON, compute_capacity
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
         capacity = compute_capacity(derived)
-        # 默认每模式 1 条，模式词典 12 类 → 再大的仓库也只能出 12 条
-        self.assertEqual(capacity["capacity"], 12)
+        # 默认每模式 1 条，所以再大的仓库也只能出「模式数」条
+        self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON))
         self.assertEqual(capacity["binding_limit"], "mode")
 
     def test_capacity_is_repo_limited_when_modes_reused(self):
