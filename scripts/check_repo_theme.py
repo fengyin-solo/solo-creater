@@ -68,9 +68,26 @@ DEFAULT_MAX_PER_MODULE = 3
 # 单仓库条数上限：平台是在同一个仓库里两两比，铺得越多最近邻越近。
 # 2026-09-16 复盘两个历史批次（48/49 条同仓库，废弃 44%/35%）后定的护栏。
 DEFAULT_MAX_PER_REPO = 35
-# 同一个主体最多出几条：判词里「同为围栏模块的属性扩展，功能点不同」也判废，
-# 所以同主体第 3 条起必须换主体。
-DEFAULT_MAX_PER_SUBJECT = 2
+# 同一个主体最多出几条。2026-09-16 又按判词复标定了一次：**默认 1 条**。
+#
+# 起因是 cc-9900003 那批 20 条按旧默认（每主体 2 条）生成、闸门判 ok，人工复核却发现
+# 5 对中高风险——10 个主体必然产出 9 对同主体近邻。拿 38 对真实判废对量了两种「对象词」口径：
+#   · 字面片段口径：同主体 9 对全部命中（等于「同主体只能 1 条」），没有区分力；
+#   · 仓库实体词口径：同主体对里 73%（cc-6600009）到 95%（cc-6600011）都共享实体词，
+#     硬拦召回仍只有 52%/35%。
+# 也就是说同一个主体的第二条题，**靠措辞区分不了**；而判废对里同主体对占 71%–76%。
+# 想看「能不能出两条」的实证口径，见 SKILL.md 的「同主体近邻」一节。
+# 确实要出第二条时加 `--max-per-subject 2`，并让对象轴判据（同主体同对象）替你兜底。
+DEFAULT_MAX_PER_SUBJECT = 1
+# 同一个需求模式最多出几条，默认 **1 条**。这条是硬拦，不是比例护栏。
+#
+# 2026-09-16 按 38 对真实判废对做集合运算：判废对里 22 对同主体、15 对跨主体但同模式，
+# 只剩 1 对两者都不沾。也就是**只要禁止「同主体」和「同模式」同时出现，就能机械地拦下
+# 37/38 = 97.4% 的判废对**（现口径只有 58%），而且完全不需要语义猜测。
+#
+# 代价是产能：一批里主体与模式都必须互不相同，所以单仓库安全产能
+# = min(单仓库上限, 主体数, 模式数)。cc-9900003 那种 11 个主体的仓库就是 11 条。
+DEFAULT_MAX_PER_MODE = 1
 # 单个需求模式占整批的比例上限：跨模块同模式的判废对占 29%–59%，要把模式铺开。
 DEFAULT_MAX_MODE_RATIO = 0.20
 # 整批句式指纹上限：优化后的 cc-9900003 里「刷新后与返回后」出现在 74% 的题面里，
@@ -83,9 +100,14 @@ DEFAULT_MAX_NEW_CAPABILITY_RATIO = 0.50
 NEW_CAPABILITY_TYPES = {"代码生成", "功能迭代"}
 # 最近邻复核清单每条题列几个邻居
 DEFAULT_REVIEW_NEIGHBORS = 3
-# 复核清单对真实判废对的召回下限：拿 38 条判废对回测，现在这套口径是 95%–100%，
-# 低于这个数说明判据被改坏了，不许写表（只改措辞、换同义词都不算修好）。
-DEFAULT_MIN_CANDIDATE_RECALL = 0.90
+# 同主体两条题的业务对象实词最多能重合几个：重合达到这个数就判「同主体同对象」，换主体。
+# 拿 38 对真实判废对校准：这条把硬拦召回从 52%/35% 提到 57%/59%，
+# 且正好覆盖 cc-9900003 那批人工读出的全部高危对（导航×登录态、死链×检测中断、
+# 导入×重复条目、分类×重名、账号×切换残留）。
+DEFAULT_MIN_SHARED_OBJECT_WORDS = 2
+# 判据对真实判废对的召回下限：拿 38 对判废对回测，现在这套口径（同主体或同模式即拦）
+# 是 97.4%，所以下限收到 0.95。低于这个数说明判据被改坏了，不许写表。
+DEFAULT_MIN_CANDIDATE_RECALL = 0.95
 # 真实判词语料：平台上被判规则 C 的题面与判废对，随 skill 一起走。
 DEFAULT_CORPUS_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "rule-c-corpus.json"
 # 闸门版本：写进台账与生成清单，跨机器一眼能看出这批题是不是按新版规则出的。
@@ -334,6 +356,7 @@ def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
         "subject_mode": f"{primary}|{mode}" if primary and mode else "",
         "feature_point": feature_point(primary, detect_capabilities(text)),
         "capability_words": sorted(capability_content_words(text)),
+        "object_words": sorted(object_content_words(text)),
         "ngrams": sorted(cjk_ngrams(text)),
         "repair_round": is_repair,
         "module_exempt": exempt,
@@ -360,6 +383,36 @@ def capability_content_words(text: str) -> set[str]:
                 word = run[index:index + size]
                 if word not in GENERIC_CAPABILITY_WORDS:
                     words.add(word)
+    return words
+
+
+MODE_KEYWORDS: set[str] = (
+    {key for keys in DEMAND_MODE_LEXICON.values() for key in keys}
+    | {key for keys in CAPABILITY_LEXICON.values() for key in keys}
+    | {key for keys in SKELETON_LEXICON.values() for key in keys}
+)
+
+
+def object_content_words(text: str) -> set[str]:
+    """题面里的**业务对象实词**：去掉需求模式词、能力词与泛词之后剩下的名词片段。
+
+    这是判据的第三根轴。2026-09-16 复盘发现，只锁「主体 + 需求模式」是不够的：
+    同一个主体允许出 2 条，于是每个主体都产出一对近邻；只要这两条落在同一个业务对象上
+    （导航 × 登录态、分类 × 重名、导入 × 重复条目、账号 × 切换残留），平台照样按
+    「同为 X 模块的属性扩展」判废，而模式标签不同恰恰让它躲过了前两根轴。
+
+    拿 38 对真实判废对校准：加上「同主体 + 共享对象实词 ≥ 2」这一条，硬拦召回从
+    52%/35% 提到 57%/59%，而这条正好把这批 20 条里我人工读出的 5 对高危全部拦下。
+    """
+    words: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]{2,}", text or ""):
+        for size in (2, 3):
+            for index in range(len(run) - size + 1):
+                word = run[index:index + size]
+                if (word in GENERIC_TOKENS or word in GENERIC_CAPABILITY_WORDS
+                        or word in MODE_KEYWORDS):
+                    continue
+                words.add(word)
     return words
 
 
@@ -497,21 +550,29 @@ def compute_capacity(
     *,
     max_per_repo: int = DEFAULT_MAX_PER_REPO,
     max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_per_mode: int = DEFAULT_MAX_PER_MODE,
     max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
 ) -> dict[str, object]:
     """这个仓库最多能出多少条题：按「主体 × 需求模式」的座位数算，不按想要多少条算。
 
-    座位数 = 主体数 × 每主体上限（默认 2）；再和单仓库上限（默认 35）取小。
-    为什么按主体数：平台判的是「主体 + 需求模式」，同一个主体最多容得下 2 条互不雷同的题，
-    第 3 条起必然和前面的撞（实测同主体出到 3 条以上的批次，规则 C 废弃率 35%–44%）。
+    座位数 = min(主体数 × 每主体上限，需求模式数 × 每模式上限，单仓库上限)
+    ——三个上限默认分别是每主体 1 条、每模式 1 条、单仓库 35 条。
+    为什么按主体数、而且默认每个主体只给 1 条：平台判的是「主体 + 需求模式」，实测判废对里
+    同主体对占 71%–76%；剩下那些同主体对里 73%–95% 共享仓库实体词，靠措辞区分不了
+    （两种对象词口径的回测见 DEFAULT_MAX_PER_SUBJECT 的注释）。
 
     所以**先算容量，再决定建几个目录、写几行 Excel**；容量小于想要的数量时，
     要么砍到容量以内，要么换主体更多的仓库，不要靠写得更花来凑数。
     """
     subjects = sorted((derived or {}).keys())
     subject_slots = len(subjects) * max_per_subject
-    capacity = min(max_per_repo, subject_slots)
-    binding = "subject" if subject_slots < max_per_repo else "repo"
+    mode_slots = len(DEMAND_MODE_LEXICON) * max_per_mode
+    capacity = min(max_per_repo, subject_slots, mode_slots)
+    binding = "repo"
+    if subject_slots <= min(max_per_repo, mode_slots):
+        binding = "subject"
+    elif mode_slots <= min(max_per_repo, subject_slots):
+        binding = "mode"
     if capacity >= 24:
         verdict = "容量充足"
     elif capacity >= 12:
@@ -524,12 +585,15 @@ def compute_capacity(
         "subject_count": len(subjects),
         "subjects": subjects,
         "subject_slots": subject_slots,
+        "mode_slots": mode_slots,
         "max_per_repo": max_per_repo,
         "max_per_subject": max_per_subject,
+        "max_per_mode": max_per_mode,
         "type_mix": suggest_type_mix(capacity, max_new_capability_ratio=max_new_capability_ratio),
         "new_capability_ratio_limit": max_new_capability_ratio,
         "verdict": verdict,
-        "rule": "容量 = min(单仓库上限, 主体数 × 每主体上限)；同一个「主体 + 需求模式」只坐 1 条题",
+        "rule": "容量 = min(单仓库上限, 主体数 × 每主体上限, 需求模式数 × 每模式上限)；"
+                "主体与需求模式在整批里各自唯一",
     }
 
 
@@ -575,7 +639,14 @@ def evaluate_corpus(corpus: dict | None) -> dict[str, object]:
                 continue
             ra, rb = classified[a], classified[b]
             features = pair_features(ra, rb, texts.get(a, ""), texts.get(b, ""))
-            if ra["subject_mode"] and ra["subject_mode"] == rb["subject_mode"]:
+            same_subject = bool(ra["module"] and ra["module"] == rb["module"])
+            shared_objects = set(ra.get("object_words") or []) & set(rb.get("object_words") or [])
+            shared_modes = set(ra.get("modes") or []) & set(rb.get("modes") or [])
+            if ((ra["subject_mode"] and ra["subject_mode"] == rb["subject_mode"])
+                    or same_subject
+                    or shared_modes
+                    or (same_subject
+                        and len(shared_objects) >= DEFAULT_MIN_SHARED_OBJECT_WORDS)):
                 hard += 1
             if features["modules"] or features["modes"]:
                 candidates += 1
@@ -610,10 +681,12 @@ def check(
     max_per_module: int = DEFAULT_MAX_PER_MODULE,
     max_per_repo: int = DEFAULT_MAX_PER_REPO,
     max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_per_mode: int = DEFAULT_MAX_PER_MODE,
     max_mode_ratio: float = DEFAULT_MAX_MODE_RATIO,
     max_ngram_ratio: float = DEFAULT_MAX_NGRAM_RATIO,
     max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
     review_neighbors: int = DEFAULT_REVIEW_NEIGHBORS,
+    min_shared_object_words: int = DEFAULT_MIN_SHARED_OBJECT_WORDS,
     min_candidate_recall: float | None = None,
     judgement_corpus: dict | None = None,
     base_ledger: dict | None = None,
@@ -623,6 +696,7 @@ def check(
     require_ledger: bool = False,
     ledger_present: bool = True,
     max_unknown: int = 0,
+    max_unknown_modes: int = 0,
 ) -> dict[str, object]:
     repair_labels = repair_labels or set()
     exempt_labels = exempt_labels or set()
@@ -726,6 +800,18 @@ def check(
             "why": "题面必须能落回仓库里的某个主体；识别不出来的先补 --repo 指向仓库，"
                    "或确认这条题面到底改的是哪一块，不能带着空白模块去出题",
         })
+    # 模式识别不出来同样危险：识别不出就无法证明它不与别的题同模式，等于绕过「同模式重复」。
+    unknown_modes = [record["label"] for record in records
+                     if not record["mode"] and not record["module_exempt"]]
+    if len(unknown_modes) > max_unknown_modes:
+        violations.append({
+            "kind": "模式未识别",
+            "count": len(unknown_modes),
+            "limit": max_unknown_modes,
+            "labels": unknown_modes[:8],
+            "why": "业务能力落不到任何一个需求模式上：识别不出来就没法保证它不与别的题同模式，"
+                   "等于绕过「同模式重复」这道硬拦。改题面把它挂到某个具体能力上再出。",
+        })
     total = len(records) + len(ledger_entries)
     if total > max_per_repo:
         violations.append({
@@ -753,8 +839,50 @@ def check(
                 "subject": subject,
                 "count": count,
                 "limit": max_per_subject,
-                "why": f"同一个主体最多出 {max_per_subject} 条，超出的必须换主体或换题材；"
-                       "跨主体同需求模式也会判废，换主体时模式也要跟着换",
+                "why": f"同一个主体最多出 {max_per_subject} 条（默认 1）：实测判废对里同主体对占 71%–76%，"
+                       "而且同主体对里 73%–95% 共享仓库实体词，靠换措辞或换模式标签都区分不开。"
+                       "超出的必须换主体；这个仓库主体不够就换主体更多的仓库。",
+            })
+    # 同主体 + 同业务对象：判据的第三根轴。同主体允许 2 条，但这两条必须落在**不同的对象面**上，
+    # 否则平台按「同为 X 模块的 Y 改造」判废——模式标签不同救不回来（实测 cc-9900003 那批
+    # 导航 × 登录态、死链 × 检测中断、导入 × 重复条目、分类 × 重名、账号 × 切换残留 五对全中）。
+    if min_shared_object_words > 0:
+        collided: list[dict[str, object]] = []
+        for index, record in enumerate(records):
+            for other in records[:index]:
+                if not record["module"] or record["module"] != other["module"]:
+                    continue
+                shared = set(record["object_words"]) & set(other["object_words"])
+                if len(shared) >= min_shared_object_words:
+                    collided.append({
+                        "subject": record["module"],
+                        "a": other["label"],
+                        "b": record["label"],
+                        "shared_object_words": sorted(shared)[:8],
+                    })
+        if collided:
+            violations.append({
+                "kind": "同主体同对象",
+                "count": len(collided),
+                "limit": min_shared_object_words,
+                "pairs": collided[:8],
+                "why": f"同一个主体上有 {len(collided)} 对题的**业务对象实词重合 ≥ "
+                       f"{min_shared_object_words} 个**：模式标签虽然不同，平台判的是对象，"
+                       "照样按「同为该模块的同类改造」判作废。这两条要换主体，"
+                       "或者把第二条改到该主体的另一个对象面上。",
+            })
+    # 同模式重复：判词集合运算显示，判废对「同主体」占 22/38、「跨主体但同模式」占 15/38，
+    # 两者都不沾的只有 1 对。所以主体与模式都唯一，就能机械拦下 97.4% 的判废对。
+    for mode, count in mode_counter.items():
+        if count > max_per_mode:
+            violations.append({
+                "kind": "同模式重复",
+                "mode": mode,
+                "count": count,
+                "limit": max_per_mode,
+                "why": f"「{mode}」在这一批里出了 {count} 条，上限 {max_per_mode} 条："
+                       "判词里 15/38 的判废对是跨主体但同模式（「同属待处理清单流程」"
+                       "「同一种分析视图」），换主体也躲不开，必须换模式。",
             })
     # 配比类判据只对整批量级生效：三五条的返修小批每一类都占两三成，卡它没意义。
     if len(records) >= 10:
@@ -867,9 +995,11 @@ def check(
         "limits": {
             "max_per_repo": max_per_repo,
             "max_per_subject": max_per_subject,
+            "max_per_mode": max_per_mode,
             "max_mode_ratio": max_mode_ratio,
             "max_ngram_ratio": max_ngram_ratio,
             "max_new_capability_ratio": max_new_capability_ratio,
+            "min_shared_object_words": min_shared_object_words,
         },
         "max_per_module": max_per_module,
         "checked_count": len(records),
@@ -895,6 +1025,8 @@ def check(
             "review_required_labels 里的每条题都要写出与最近邻的差异，写不出就换主体或换模式。",
             "0-1 代码生成不豁免规则 C：凭空造的功能只要落在同一主体或同一需求模式上照样判废"
             "（cc-6600009 代码生成废弃率 59%，比功能迭代还高）。",
+            "同一个主体默认只出 1 条：判废对里同主体对占 71%–76%，而且同主体对里 73%–95% "
+            "共享仓库实体词，换措辞、换模式标签都分不开；主体不够就换更大的仓库。",
         ],
     }
 
@@ -971,7 +1103,7 @@ def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | No
 
 LEDGER_ENTRY_FIELDS = (
     "label", "module", "modules", "mode", "modes", "subject_mode", "capabilities",
-    "skeletons", "feature_point", "capability_words", "template_clauses",
+    "skeletons", "feature_point", "capability_words", "object_words", "template_clauses",
     "repair_round", "module_exempt",
 )
 
@@ -1033,6 +1165,7 @@ def run_gate(
     max_per_module: int = DEFAULT_MAX_PER_MODULE,
     max_per_repo: int = DEFAULT_MAX_PER_REPO,
     max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_per_mode: int = DEFAULT_MAX_PER_MODE,
     max_mode_ratio: float = DEFAULT_MAX_MODE_RATIO,
     max_ngram_ratio: float = DEFAULT_MAX_NGRAM_RATIO,
     max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
@@ -1051,6 +1184,7 @@ def run_gate(
         max_per_module=max_per_module,
         max_per_repo=max_per_repo,
         max_per_subject=max_per_subject,
+        max_per_mode=max_per_mode,
         max_mode_ratio=max_mode_ratio,
         max_ngram_ratio=max_ngram_ratio,
         max_new_capability_ratio=max_new_capability_ratio,
@@ -1118,6 +1252,9 @@ def main() -> None:
                         help=f"单仓库最多出几条（跨批次累计），默认 {DEFAULT_MAX_PER_REPO}")
     parser.add_argument("--max-per-subject", type=int, default=DEFAULT_MAX_PER_SUBJECT,
                         help=f"同一主体最多出几条，默认 {DEFAULT_MAX_PER_SUBJECT}")
+    parser.add_argument("--max-per-mode", type=int, default=DEFAULT_MAX_PER_MODE,
+                        help=f"同一需求模式最多出几条，默认 {DEFAULT_MAX_PER_MODE}；"
+                             "判废对里 15/38 是跨主体同模式，换主体躲不开，只能换模式")
     parser.add_argument("--max-mode-ratio", type=float, default=DEFAULT_MAX_MODE_RATIO,
                         help=f"单个需求模式占整批的比例上限，默认 {DEFAULT_MAX_MODE_RATIO}")
     parser.add_argument("--max-ngram-ratio", type=float, default=DEFAULT_MAX_NGRAM_RATIO,
@@ -1129,6 +1266,10 @@ def main() -> None:
                              f"{DEFAULT_MAX_NEW_CAPABILITY_RATIO}")
     parser.add_argument("--review-neighbors", type=int, default=DEFAULT_REVIEW_NEIGHBORS,
                         help=f"最近邻复核清单每条列几个邻居，默认 {DEFAULT_REVIEW_NEIGHBORS}")
+    parser.add_argument("--min-shared-object-words", type=int,
+                        default=DEFAULT_MIN_SHARED_OBJECT_WORDS,
+                        help="同主体两条题的业务对象实词重合到几个就判「同主体同对象」，"
+                             f"默认 {DEFAULT_MIN_SHARED_OBJECT_WORDS}；传 0 关闭这条判据")
     parser.add_argument("--judgement-corpus",
                         help="真实判词语料（默认找 skill 里的 tests/fixtures/rule-c-corpus.json）；"
                              "给了就回测判据召回")
@@ -1139,6 +1280,8 @@ def main() -> None:
                         help="跳过判词回归（只在调试判据时用，正式出题不许跳）")
     parser.add_argument("--max-unknown", type=int, default=0,
                         help="允许几条题面识别不到主体，默认 0（一条都不许）")
+    parser.add_argument("--max-unknown-modes", type=int, default=0,
+                        help="允许几条题面识别不到需求模式，默认 0（一条都不许）")
     args = parser.parse_args()
     if args.version:
         print(json.dumps({
@@ -1220,10 +1363,12 @@ def main() -> None:
         max_per_module=args.max_per_module,
         max_per_repo=args.max_per_repo,
         max_per_subject=args.max_per_subject,
+        max_per_mode=args.max_per_mode,
         max_mode_ratio=args.max_mode_ratio,
         max_ngram_ratio=args.max_ngram_ratio,
         max_new_capability_ratio=args.max_new_capability_ratio,
         review_neighbors=args.review_neighbors,
+        min_shared_object_words=args.min_shared_object_words,
         judgement_corpus=judgement_corpus,
         min_candidate_recall=(None if args.no_calibration else args.min_candidate_recall),
         base_ledger=base_ledger,
@@ -1233,6 +1378,7 @@ def main() -> None:
         require_ledger=args.require_ledger,
         ledger_present=bool(ledger_path and ledger_path.exists()),
         max_unknown=args.max_unknown,
+        max_unknown_modes=args.max_unknown_modes,
     )
     result["gate_version"] = GATE_VERSION
     if corpus_path:

@@ -216,16 +216,16 @@ class RepoThemeTest(unittest.TestCase):
         from check_repo_theme import check
 
         items = [
-            ("t1", "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单。"),
-            ("t2", "新增围栏准入名单：设备越过不在名单内的围栏时生成一条闯入记录。"),
+            ("t1", "新增告警批量确认：多选若干条未确认的告警一次提交，逐条给出结果。"),
+            ("t2", "新增围栏导出：把选定的围栏与准入名单打包导出成文件。"),
         ]
         # 台账内容与当前这批完全相同（写入台账后立即复查就是这个状态）
         ledger = {
             "entries": [
-                {"label": "t1", "module": "告警中心", "mode": "状态流转",
-                 "subject_mode": "告警中心|状态流转"},
-                {"label": "t2", "module": "围栏工作台", "mode": "规则与阈值",
-                 "subject_mode": "围栏工作台|规则与阈值"},
+                {"label": "t1", "module": "告警中心", "mode": "批量操作",
+                 "subject_mode": "告警中心|批量操作"},
+                {"label": "t2", "module": "围栏工作台", "mode": "导入导出",
+                 "subject_mode": "围栏工作台|导入导出"},
             ]
         }
         result = check(items, base_ledger=ledger)
@@ -254,7 +254,9 @@ class CapacityTest(unittest.TestCase):
     """建仓数量必须由容量决定，不能固定 46 条。
 
     2026-09-16 实测：把 48/49 条压在同一个仓库里，规则 C 废弃 44%/35%。
-    容量 = min(单仓库上限 35, 主体数 × 每主体上限 2)，建目录数与 Excel 行数都按它来。
+    容量 = min(单仓库上限 35, 主体数 × 每主体上限 1)，建目录数与 Excel 行数都按它来。
+    每主体默认 1 条是复标定结果：判废对里同主体对占 71%–76%，同主体对里 73%–95% 共享
+    仓库实体词，靠措辞或模式标签都分不开。
     """
 
     def test_capacity_is_subject_limited(self):
@@ -262,15 +264,24 @@ class CapacityTest(unittest.TestCase):
 
         derived = {f"Comp{index}": {"词"} for index in range(11)}
         capacity = compute_capacity(derived)
-        self.assertEqual(capacity["capacity"], 22)
+        self.assertEqual(capacity["capacity"], 11)
         self.assertEqual(capacity["binding_limit"], "subject")
         self.assertEqual(capacity["subject_count"], 11)
 
-    def test_capacity_is_repo_limited(self):
+    def test_capacity_is_mode_limited_by_default(self):
         from check_repo_theme import compute_capacity
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
         capacity = compute_capacity(derived)
+        # 默认每模式 1 条，模式词典 12 类 → 再大的仓库也只能出 12 条
+        self.assertEqual(capacity["capacity"], 12)
+        self.assertEqual(capacity["binding_limit"], "mode")
+
+    def test_capacity_is_repo_limited_when_modes_reused(self):
+        from check_repo_theme import compute_capacity
+
+        derived = {f"Comp{index}": {"词"} for index in range(40)}
+        capacity = compute_capacity(derived, max_per_mode=3)
         self.assertEqual(capacity["capacity"], 35)
         self.assertEqual(capacity["binding_limit"], "repo")
 
@@ -291,7 +302,7 @@ class CapacityTest(unittest.TestCase):
         from check_repo_theme import compute_capacity
 
         capacity = compute_capacity({"OnlyComponent": {"词"}})
-        self.assertEqual(capacity["capacity"], 2)
+        self.assertEqual(capacity["capacity"], 1)
         self.assertIn("撑不起一批", capacity["verdict"])
 
     def test_create_batch_defaults_to_capacity(self):
@@ -344,9 +355,58 @@ class CapacityTest(unittest.TestCase):
                 capture_output=True, text=True, check=True,
             )
             payload = json.loads(completed.stdout)
-            self.assertEqual(payload["capacity"], 12)
+            self.assertEqual(payload["capacity"], 6)
             self.assertEqual(len(payload["subjects"]), 6)
-            self.assertEqual(sum(payload["type_mix"].values()), 12)
+            self.assertEqual(sum(payload["type_mix"].values()), 6)
+
+    def test_second_prompt_on_same_subject_is_blocked_by_default(self):
+        """同一个主体默认只能 1 条：第二条就是判废对的来源。"""
+        from check_repo_theme import check
+
+        derived = {"Navbar": {"导航", "登录", "退出", "失效"}}
+        items = [
+            ("a[功能迭代]", "顶部导航想按会话状态做出区分：临近失效时切回未登录的样子。"),
+            ("b[功能迭代]", "顶部导航想按身份区分可见范围：未登录时点入口先要求登录。"),
+        ]
+        result = check(items, derived=derived, max_unknown=99)
+        self.assertFalse(result["ok"], result["violations"])
+        self.assertTrue(
+            any(v["kind"] == "同主体超额" for v in result["violations"]), result["violations"]
+        )
+
+    def test_mode_duplication_is_blocked(self):
+        """跨主体但同模式也要拦：判废对里 15/38 是这种。"""
+        from check_repo_theme import check
+
+        derived = {
+            "AlarmCenter": {"告警", "升级", "阈值"},
+            "DeviceOffline": {"设备", "离线", "心跳"},
+        }
+        items = [
+            ("a[代码生成]", "新增告警批量确认：多选若干条未确认的告警一次提交，逐条给出结果。"),
+            ("b[代码生成]", "新增设备批量注册：多选若干台设备一次提交，逐台给出结果。"),
+        ]
+        result = check(items, derived=derived, max_unknown=99)
+        self.assertFalse(result["ok"], result["violations"])
+        self.assertTrue(
+            any(v["kind"] == "同模式重复" for v in result["violations"]), result["violations"]
+        )
+
+    def test_object_axis_blocks_same_subject_when_opt_in(self):
+        """显式放开到每主体 2 条时，对象轴要兜底：对象实词重合就拦。"""
+        from check_repo_theme import check
+
+        derived = {"DeadLinks": {"死链", "检测", "链接", "重试"}}
+        items = [
+            ("a[功能迭代]", "死链页面想补齐几种边界情形：检测中断以后已经判定的结果要保留，"
+                             "单条超时可以单独重试，回到页面结论和计数要跟刚才一致。"),
+            ("b[缺陷修复]", "死链检测断了以后已经查完的结果会丢，失败的那几条只给一句报错、"
+                             "看不出是哪个网址，希望允许单独重试并且两处结论一致。"),
+        ]
+        result = check(items, derived=derived, max_unknown=99, max_per_subject=2)
+        self.assertFalse(result["ok"], result["violations"])
+        kinds = {v["kind"] for v in result["violations"]}
+        self.assertTrue({"同主体同对象"} <= kinds, result["violations"])
 
 
 class DifficultyStructureTest(unittest.TestCase):
