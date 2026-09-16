@@ -264,7 +264,8 @@ class CapacityTest(unittest.TestCase):
 
         derived = {f"Comp{index}": {"词"} for index in range(11)}
         capacity = compute_capacity(derived)
-        self.assertEqual(capacity["capacity"], 11)
+        # 默认每主体 2 条 → 11 × 2 = 22（模式上限 13 × 2 = 26 不构成瓶颈）
+        self.assertEqual(capacity["capacity"], 22)
         self.assertEqual(capacity["binding_limit"], "subject")
         self.assertEqual(capacity["subject_count"], 11)
 
@@ -273,8 +274,8 @@ class CapacityTest(unittest.TestCase):
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
         capacity = compute_capacity(derived)
-        # 默认每模式 1 条，所以再大的仓库也只能出「模式数」条
-        self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON))
+        # 默认每模式 2 条，所以再大的仓库也只能出「模式数 × 2」条
+        self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON) * 2)
         self.assertEqual(capacity["binding_limit"], "mode")
 
     def test_capacity_is_repo_limited_when_modes_reused(self):
@@ -302,7 +303,8 @@ class CapacityTest(unittest.TestCase):
         from check_repo_theme import compute_capacity
 
         capacity = compute_capacity({"OnlyComponent": {"词"}})
-        self.assertEqual(capacity["capacity"], 1)
+        # 默认每主体 2 条 → 单个主体的仓库是 2 条，仍然远低于一批的量
+        self.assertEqual(capacity["capacity"], 2)
         self.assertIn("撑不起一批", capacity["verdict"])
 
     def test_create_batch_defaults_to_capacity(self):
@@ -355,12 +357,12 @@ class CapacityTest(unittest.TestCase):
                 capture_output=True, text=True, check=True,
             )
             payload = json.loads(completed.stdout)
-            self.assertEqual(payload["capacity"], 6)
+            self.assertEqual(payload["capacity"], 12)
             self.assertEqual(len(payload["subjects"]), 6)
-            self.assertEqual(sum(payload["type_mix"].values()), 6)
+            self.assertEqual(sum(payload["type_mix"].values()), 12)
 
-    def test_second_prompt_on_same_subject_is_blocked_by_default(self):
-        """同一个主体默认只能 1 条：第二条就是判废对的来源。"""
+    def test_same_family_second_prompt_is_blocked(self):
+        """同一个主体的第二条题必须跨任务家族：同家族的两条是判废对的来源。"""
         from check_repo_theme import check
 
         derived = {"Navbar": {"导航", "登录", "退出", "失效"}}
@@ -371,11 +373,27 @@ class CapacityTest(unittest.TestCase):
         result = check(items, derived=derived, max_unknown=99)
         self.assertFalse(result["ok"], result["violations"])
         self.assertTrue(
-            any(v["kind"] == "同主体超额" for v in result["violations"]), result["violations"]
+            any(v["kind"] == "同主体同家族" for v in result["violations"]), result["violations"]
         )
 
+    def test_cross_family_second_prompt_on_same_subject_is_allowed(self):
+        """跨家族的第二条允许：判废对里「新增能力 ↔ 缺陷修复」的组合 0/38。"""
+        from check_repo_theme import check
+
+        derived = {"Home": {"链接", "分类", "标签", "筛选", "清除"}}
+        items = [
+            ("a[代码生成]", "新增收藏总览看板：把分类与标签整理成一块看板，点其中一块只看对应的那批。"),
+            ("b[缺陷修复]", "标签点不动：列表里点标签没有反应，侧栏点同一个标签能筛出内容，两处对不上。"),
+        ]
+        result = check(items, derived=derived, max_unknown=99)
+        self.assertTrue(
+            not any(v["kind"].startswith("同主体") for v in result["violations"]),
+            result["violations"],
+        )
+        self.assertEqual(result["module_counts"].get("Home"), 2, result["module_counts"])
+
     def test_mode_duplication_is_blocked(self):
-        """跨主体但同模式也要拦：判废对里 15/38 是这种。"""
+        """跨主体但同模式也要拦（把每模式上限收到 1 时）：判废对里 15/38 是这种。"""
         from check_repo_theme import check
 
         derived = {
@@ -386,7 +404,7 @@ class CapacityTest(unittest.TestCase):
             ("a[代码生成]", "新增告警批量确认：多选若干条未确认的告警一次提交，逐条给出结果。"),
             ("b[代码生成]", "新增设备批量注册：多选若干台设备一次提交，逐台给出结果。"),
         ]
-        result = check(items, derived=derived, max_unknown=99)
+        result = check(items, derived=derived, max_unknown=99, max_per_mode=1)
         self.assertFalse(result["ok"], result["violations"])
         self.assertTrue(
             any(v["kind"] == "同模式重复" for v in result["violations"]), result["violations"]
