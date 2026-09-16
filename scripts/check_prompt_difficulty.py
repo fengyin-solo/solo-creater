@@ -40,8 +40,13 @@ import batch_prompt_workbook as workbook_lib  # noqa: E402
 
 
 DEFAULT_MIN_HITS = 2
-DEFAULT_TASK_TYPES = "缺陷修复"
+# 2026-09-16 改：难度检查默认覆盖全部任务类型。cc-6600011 的 33 号是「代码生成」，
+# 批量流程只跑了 缺陷修复 这一类，题面再简单也不会进闸门，最后被平台按 P3 判废弃。
+DEFAULT_TASK_TYPES = "all"
 ALL_TASK_TYPES = {"all", "全部", "*"}
+# 备注里写清「难度复核: …」的条目视为人工复核过；平台按语义判难度，脚本只能做筛选，
+# 命中两项时要么换角度重出，要么把这道题为什么不算简单的依据写进备注留档。
+JUSTIFICATION_PREFIX = "难度复核"
 # 单独命中也要拒的特征：改动收在一处判断、一个文件或一段文案里，是最典型的「过于简单」。
 # 平台 P3 判词（cc-6600009 的 41 号）里「修改范围」就是其中一条依据：只改一处判断的题
 # 即使另外两个特征没命中也会被拒收。但「修改范围」这个词面特征本身有强有弱：
@@ -407,25 +412,63 @@ def check(
     min_hits: int,
     *,
     defect_structure: bool = True,
+    defect_labels: set[str] | None = None,
+    justifications: dict[str, str] | None = None,
 ) -> dict[str, object]:
+    justifications = justifications or {}
     results: list[dict[str, object]] = []
     violations: list[dict[str, object]] = []
+    needs_review: list[dict[str, object]] = []
+    justified: list[dict[str, object]] = []
     max_hits = 0
     for label, text in items:
         verdict = evaluate(text)
         hit_count = int(verdict["hit_count"])
         max_hits = max(max_hits, hit_count)
         reject_traits = sorted(set(verdict["hard_rejects"]) & REJECT_ON_HIT_TRAITS)
-        structure = evaluate_defect_structure(text) if defect_structure else None
+        # defect_labels=None 表示「本次检查的对象都是缺陷修复题」——单项目与 prompts-file 就是这么调的，
+        # 这种时候硬信号与结构下限都照旧生效；批量全类型检查会传实际的缺陷修复标签集合，
+        # 只有集合里的条目才硬拦，其余进 needs_review。
+        is_defect_item = defect_labels is None or label in defect_labels
+        applies = defect_structure and is_defect_item
+        structure = evaluate_defect_structure(text) if applies else None
+        note = str(justifications.get(label, "") or "").strip()
         reasons: list[str] = []
-        if reject_traits:
+        hard = False
+        if reject_traits and is_defect_item:
             evidence = "、".join(verdict["hard_evidence"].get("修改范围", [])[:3])
             reasons.append(
                 f"命中「{'、'.join(reject_traits)}」的硬信号（{evidence}），"
                 "改动收在一处判断或一段文案里，直接拒收"
             )
+            hard = True
         if hit_count >= min_hits:
-            reasons.append(f"命中 {hit_count} 项「过于简单」特征（上限 {min_hits - 1} 项）")
+            if note:
+                justified.append({
+                    "label": label,
+                    "hit_count": hit_count,
+                    "hits": verdict["hits"],
+                    "note": note,
+                })
+            elif not applies:
+                # 2026-09-16 改：难度词面检查只对缺陷修复题硬拦。代码生成与功能迭代题里
+                # 这套词面口径命中率过高（cc-6600011 那批 49 条里 35 条命中），
+                # 当硬闸会把大量平台放行的题挡在门外；这几类改成列进 needs_review，
+                # 由出题人逐条复核并写「难度复核: …」留档，复核结论进台账。
+                needs_review.append({
+                    "label": label,
+                    "hit_count": hit_count,
+                    "hits": verdict["hits"],
+                    "evidence": verdict["evidence"],
+                    "hard_signal": bool(reject_traits),
+                    "note": "复核后把依据写进工作簿备注，以「难度复核: 」开头",
+                })
+            else:
+                reasons.append(
+                    f"命中 {hit_count} 项「过于简单」特征（上限 {min_hits - 1} 项）："
+                    "要么换角度重出，要么把这道题不算简单的依据写进工作簿备注，"
+                    f"并以「{JUSTIFICATION_PREFIX}: 」开头留档"
+                )
         if structure is not None and not structure["ok"]:
             missing: list[str] = []
             if not structure["enough_points"]:
@@ -433,6 +476,7 @@ def check(
             if not structure["enough_entries"]:
                 missing.append("题面落到两个以上入口")
             reasons.append("缺陷修复的结构下限不满足：" + "；".join(missing))
+            hard = True
         record = {
             "label": label,
             "hit_count": hit_count,
@@ -446,21 +490,28 @@ def check(
         results.append(record)
         if record["too_simple"]:
             violations.append(record)
+            if not hard:
+                needs_review.append({"label": label, "hit_count": hit_count, "hits": verdict["hits"]})
 
     return {
         "ok": not violations,
         "rule": PLATFORM_RULE,
         "min_hits": min_hits,
+        "justification_prefix": JUSTIFICATION_PREFIX,
         "reject_on_hit_traits": sorted(REJECT_ON_HIT_TRAITS),
         "defect_structure_required": defect_structure,
         "checked_count": len(items),
         "too_simple_count": len(violations),
+        "needs_review": needs_review,
+        "justified": justified,
         "max_hits": max_hits,
         "violations": violations,
         "items": results,
         "notes": [
             "本脚本是词面兜底检查，通过不代表题目一定够难，生成方还必须按手册的难度下限自查。",
-            "命中两项及以上时必须换角度重出，只改同义词、只加几个限定词都不算通过。",
+            "命中两项及以上时要么换角度重出，要么把「为什么这道题不算简单」写进工作簿备注并"
+            f"以「{JUSTIFICATION_PREFIX}: 」开头；只改同义词、只加限定词不算通过。",
+            "难度默认按全部任务类型检查；只跑缺陷修复会漏掉代码生成与功能迭代里的单点题。",
         ],
     }
 
@@ -478,11 +529,12 @@ def load_workbook_prompts(
     parent: Path,
     workbook_name: str,
     task_types: str,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], dict[str, str]]:
     records = workbook_lib.read_workbook(parent / workbook_name)
     wanted = {part.strip() for part in task_types.split(",") if part.strip()}
     apply_filter = bool(wanted) and not (wanted & ALL_TASK_TYPES)
     items: list[tuple[str, str]] = []
+    justifications: dict[str, str] = {}
     for record in records:
         prompt = str(record.get("提示词", "") or "").strip()
         if not prompt:
@@ -494,7 +546,10 @@ def load_workbook_prompts(
         if task_type:
             label = f"{label}[{task_type}]"
         items.append((label, prompt))
-    return items
+        note = str(record.get("备注", "") or "").strip()
+        if note.startswith(JUSTIFICATION_PREFIX):
+            justifications[label] = note
+    return items, justifications
 
 
 def main() -> None:
@@ -514,17 +569,36 @@ def main() -> None:
 
     if args.prompts_file:
         items = load_prompt_file(Path(args.prompts_file).expanduser().resolve())
+        justifications: dict[str, str] = {}
     elif args.parent:
         parent = Path(args.parent).expanduser().resolve()
         if not parent.is_dir():
             raise SystemExit(f"Parent directory does not exist: {parent}")
-        items = load_workbook_prompts(parent, args.workbook, args.task_types)
+        items, justifications = load_workbook_prompts(parent, args.workbook, args.task_types)
     else:
         raise SystemExit("必须提供 --parent 或 --prompts-file 之一")
 
     wanted = {part.strip() for part in args.task_types.split(",") if part.strip()}
-    defect_structure = (not args.no_defect_structure) and bool(wanted & {"缺陷修复", "Bug 修复"})
-    result = check(items, args.min_hits, defect_structure=defect_structure)
+    if args.no_defect_structure:
+        defect_structure = False
+    elif wanted & {"缺陷修复", "Bug 修复"}:
+        defect_structure = True
+    elif not wanted or wanted & ALL_TASK_TYPES:
+        # 全部类型一起查时，缺陷修复题的结构下限不能丢：按标签里的任务类型逐条判定，
+        # 只对缺陷修复那几条套结构下限。
+        defect_structure = True
+    else:
+        defect_structure = False
+    defect_labels = {
+        label for label, _ in items
+        if "缺陷修复" in label or "Bug 修复" in label
+    }
+    result = check(
+        items, args.min_hits,
+        defect_structure=defect_structure,
+        defect_labels=defect_labels,
+        justifications=justifications,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if not result["ok"]:
         sys.exit(1)

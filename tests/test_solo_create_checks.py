@@ -15,6 +15,63 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class RepoThemeTest(unittest.TestCase):
+    def test_repo_modules_and_feature_points_block_repeat(self):
+        """按仓库结构派生模块 + 功能点级去重：同一模块同一能力只能出 1 条。
+
+        cc-6600011 那批 17 条规则 C 废弃里，多数就是同模块同能力的第二条题
+        （列表翻页对列表过滤、占比口径对参考范围、走势曲线对越线预警）。
+        """
+        import tempfile
+
+        from check_repo_theme import check, derive_repo_modules
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            components = repo / "frontend" / "src" / "components"
+            components.mkdir(parents=True)
+            (components / "RecordingPanel.tsx").write_text(
+                "const label = '历史录制'; const tip = '开始录制'; const hint = '删除录制记录';",
+                encoding="utf-8",
+            )
+            (components / "BrainStateDashboard.tsx").write_text(
+                "const label = '脑状态'; const tip = '专注度'; const hint = '疲劳度';",
+                encoding="utf-8",
+            )
+            derived = derive_repo_modules(repo)
+            self.assertIn("RecordingPanel", derived)
+            self.assertIn("录制", derived["RecordingPanel"])
+
+            first = "新增录制列表分页：录制很多时按页浏览，翻页后保持当前通道的录制顺序。"
+            second = "新增录制列表排序：把历史录制按名称排序，排序后仍能点开回看。"
+            result = check([("a", first), ("b", second)], derived=derived, max_per_module=3)
+            self.assertFalse(result["ok"], result["violations"])
+            self.assertTrue(
+                any(v["kind"] == "功能点重复" for v in result["violations"]), result["violations"]
+            )
+
+    def test_unknown_module_is_a_violation(self):
+        """题面落不回仓库模块时要拦：不认模块就查不出同功能点重复。"""
+        from check_repo_theme import check
+
+        result = check(
+            [("a", "新增一件小事：把标题改一下。")],
+            derived={"RecordingPanel": {"录制", "回放"}},
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(v["kind"] == "模块未识别" for v in result["violations"]), result["violations"])
+
+    def test_missing_ledger_blocks_batch(self):
+        """批量出题的硬前置：没有台账不许写工作簿。"""
+        from check_repo_theme import check
+
+        result = check(
+            [("a", "新增告警处置预案：按告警类型维护可复用的处置步骤。")],
+            require_ledger=True,
+            ledger_present=False,
+        )
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(v["kind"] == "台账缺失" for v in result["violations"]), result["violations"])
+
     def test_module_quota_blocks_overcrowded_module(self):
         """同一模块超过上限就要硬拦：实测告警中心出了 15 条，是废弃的主因。"""
         from check_repo_theme import check
@@ -58,6 +115,38 @@ class RepoThemeTest(unittest.TestCase):
 
 
 class DifficultyStructureTest(unittest.TestCase):
+    def test_difficulty_default_covers_all_task_types(self):
+        """难度检查默认覆盖全部任务类型：33 号是代码生成，只查缺陷修复会漏掉它。"""
+        from check_prompt_difficulty import DEFAULT_TASK_TYPES
+
+        self.assertEqual(DEFAULT_TASK_TYPES, "all")
+
+    def test_non_defect_hits_go_to_needs_review_with_justification(self):
+        """代码生成 / 功能迭代命中两项时进 needs_review，写清依据才算过。"""
+        from check_prompt_difficulty import check
+
+        prompt = "新增电极位置分布：按前额、额、中央、顶、枕把通道摆出来，点某个位置即切到该通道，鼠标停在上面给出名称。"
+        label = "t[代码生成]"
+        result = check([(label, prompt)], min_hits=2, defect_structure=True, defect_labels=set())
+        self.assertTrue(result["needs_review"], result)
+        self.assertTrue(result["ok"], "非缺陷题命中只进复核清单，不硬拦")
+
+        justified = check(
+            [(label, prompt)], min_hits=2, defect_structure=True, defect_labels=set(),
+            justifications={label: "难度复核: 跨三个面板联动，另含回看与刷新两条路径"},
+        )
+        self.assertTrue(justified["ok"], justified)
+        self.assertEqual(len(justified["justified"]), 1)
+
+    def test_defect_task_still_hard_blocked(self):
+        """缺陷修复题命中的照旧硬拦，别把复核机制当成通行证。"""
+        from check_prompt_difficulty import check
+
+        prompt = "修复导出按钮点不动，只改一处校验就够了。"
+        label = "t[缺陷修复]"
+        result = check([(label, prompt)], min_hits=2, defect_structure=True, defect_labels={label})
+        self.assertFalse(result["ok"], result)
+
     def test_narrow_scope_is_rejected_even_with_single_hit(self):
         """「修改范围」的硬信号命中即拒：实测 41 号就栽在这条。
 
