@@ -16,12 +16,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 
 class RepoThemeTest(unittest.TestCase):
-    def test_repo_modules_and_feature_points_block_repeat(self):
-        """按仓库结构派生模块 + 功能点级去重：同一模块同一能力只能出 1 条。
-
-        cc-6600011 那批 17 条规则 C 废弃里，多数就是同模块同能力的第二条题
-        （列表翻页对列表过滤、占比口径对参考范围、走势曲线对越线预警）。
-        """
+    def test_repo_modules_derive_from_source(self):
+        """主体词典必须从仓库自身派生：一条题面能落回某个组件才算合格。"""
         import tempfile
 
         from check_repo_theme import check, derive_repo_modules
@@ -41,17 +37,116 @@ class RepoThemeTest(unittest.TestCase):
             derived = derive_repo_modules(repo)
             self.assertIn("RecordingPanel", derived)
             self.assertIn("录制", derived["RecordingPanel"])
-
-            first = "新增录制列表分页：录制很多时按页浏览，翻页后保持当前通道的录制顺序。"
-            second = "新增录制列表排序：把历史录制按名称排序，排序后仍能点开回看。"
-            result = check([("a", first), ("b", second)], derived=derived, max_per_module=3)
-            self.assertFalse(result["ok"], result["violations"])
-            self.assertTrue(
-                any(v["kind"] == "功能点重复" for v in result["violations"]), result["violations"]
+            result = check(
+                [("a", "新增录制列表分页：录制很多时按页浏览，翻页后保持当前通道的录制顺序。")],
+                derived=derived,
             )
+            self.assertEqual(result["items"][0]["module"], "RecordingPanel")
+
+    def test_same_subject_same_mode_is_hard_blocked(self):
+        """同一「主体 + 需求模式」只能有一条。
+
+        平台判词原话：「同为围栏模块的属性扩展，功能点不同」——两条题功能点完全不同也照样判废，
+        所以这一格重复必须硬拦。
+        """
+        from check_repo_theme import check
+
+        derived = {"DeviceRegistration": {"设备", "注册", "批量"}}
+        items = [
+            ("a", "新增设备批量注册：多台设备一次提交，逐台给出成功失败清单。"),
+            ("b", "新增设备批量下发参数：多台设备一次提交配置，逐台给出成功失败清单。"),
+        ]
+        result = check(items, derived=derived)
+        self.assertFalse(result["ok"], result["violations"])
+        self.assertTrue(
+            any(v["kind"] == "主体模式重复" for v in result["violations"]), result["violations"]
+        )
+
+    def test_cross_subject_same_mode_is_candidate(self):
+        """跨主体的同需求模式对不会硬拦，但必须进复核清单。"""
+        from check_repo_theme import check
+
+        derived = {
+            "AlarmCenter": {"告警", "升级", "阈值"},
+            "DeviceOffline": {"设备", "离线", "阈值"},
+        }
+        items = [
+            ("a", "新增告警批量确认：多选若干条未确认的告警一次提交，逐条给出结果。"),
+            ("b", "新增设备批量注册：多选若干台设备一次提交，逐台给出结果。"),
+        ]
+        result = check(items, derived=derived)
+        pairs = result["candidate_pairs"]
+        self.assertTrue(pairs, "跨主体同模式必须进候选清单")
+        self.assertTrue(any(pair["modes"] for pair in pairs), pairs)
+        self.assertTrue(any(pair["risk"] == "高" for pair in pairs), pairs)
+
+    def test_repo_capacity_blocks_oversized_batch(self):
+        """单仓库条数上限：平台是在同一个仓库里两两比，铺得越多越近。"""
+        from check_repo_theme import check
+
+        derived = {"RecordingPanel": {"录制", "回看", "通道"}}
+        items = [
+            (f"{index}[代码生成]", f"新增录制回看能力第 {index} 种：按通道整理历史录制的第 {index} 个侧面。")
+            for index in range(1, 37)
+        ]
+        result = check(items, derived=derived, max_unknown=99)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any(v["kind"] == "仓库超出容量" for v in result["violations"]), result["violations"]
+        )
+
+    def test_subject_over_quota_is_blocked(self):
+        """同一个主体最多 2 条：判词里同主体的第三条题同样进雷同池。"""
+        from check_repo_theme import check
+
+        derived = {"AlarmCenter": {"告警", "升级", "阈值", "预案", "交接"}}
+        items = [
+            ("a", "新增告警处置预案：按告警类型维护处置步骤，逐条勾选后自动结单。"),
+            ("b", "新增告警超时升级：超过设定时长未确认的告警自动提升级别。"),
+            ("c", "新增告警跨班交接：把未确认的告警连同处理进度转交给下一班。"),
+        ]
+        result = check(items, derived=derived)
+        self.assertTrue(
+            any(v["kind"] == "同主体超额" for v in result["violations"]), result["violations"]
+        )
+
+    def test_repeated_template_clause_is_blocked(self):
+        """整批复用同一个从句就是判词里的「约束句式一致」，与措辞好坏无关。
+
+        实测 cc-9900003 那批 46 条里有 74% 含同一个「刷新后与返回后」从句，
+        而两个被判废的批次最高只有 10%——这条是优化过程中新引入的风险。
+        """
+        from check_repo_theme import check
+
+        derived = {"RecordingPanel": {"录制", "回看"}}
+        items = [
+            (f"{index}[缺陷修复]", f"录制回看第 {index} 处状态对不上，期望修好以后刷新后与返回后保持一致。")
+            for index in range(1, 11)
+        ]
+        result = check(items, derived=derived, max_unknown=99, max_per_repo=99)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any(v["kind"] == "句式指纹重复" for v in result["violations"]), result["violations"]
+        )
+
+    def test_new_capability_ratio_is_blocked(self):
+        """新增能力类占比过高要拦：实测这类废弃 43%–57%，缺陷修复只有 14%–29%。"""
+        from check_repo_theme import check
+
+        derived = {"RecordingPanel": {"录制", "回看", "通道", "波形", "标记"}}
+        items = [
+            (f"{index}[代码生成]", f"新增录制回看第 {index} 个展示能力：按通道排名并标出第 {index} 项。")
+            for index in range(1, 13)
+        ]
+        result = check(items, derived=derived, max_unknown=99, max_per_repo=99)
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any(v["kind"] == "新增能力类占比超额" for v in result["violations"]),
+            result["violations"],
+        )
 
     def test_unknown_module_is_a_violation(self):
-        """题面落不回仓库模块时要拦：不认模块就查不出同功能点重复。"""
+        """题面落不回仓库主体时要拦：不认主体就查不出同主体同模式的重复。"""
         from check_repo_theme import check
 
         result = check(
@@ -59,7 +154,7 @@ class RepoThemeTest(unittest.TestCase):
             derived={"RecordingPanel": {"录制", "回放"}},
         )
         self.assertFalse(result["ok"])
-        self.assertTrue(any(v["kind"] == "模块未识别" for v in result["violations"]), result["violations"])
+        self.assertTrue(any(v["kind"] == "主体未识别" for v in result["violations"]), result["violations"])
 
     def test_missing_ledger_blocks_batch(self):
         """批量出题的硬前置：没有台账不许写工作簿。"""
@@ -73,51 +168,49 @@ class RepoThemeTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(any(v["kind"] == "台账缺失" for v in result["violations"]), result["violations"])
 
-    def test_module_quota_blocks_overcrowded_module(self):
-        """同一模块超过上限就要硬拦：实测告警中心出了 15 条，是废弃的主因。"""
+    def test_diverse_batch_passes(self):
+        """主体、模式、类型都铺开的批次要能通过。"""
         from check_repo_theme import check
 
         items = [
-            ("t1", "新增告警自动分派：按设备所属区域把新告警指派给对应人员，没人值班时回落到公共清单。"),
-            ("t2", "新增告警处理时效视图：按处理人统计告警从产生到确认的耗时，标出明显超时的条目。"),
-            ("t3", "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单。"),
-            ("t4", "新增告警交接：把尚未确认的告警连同处理进度转交给下一班，接班人看到接手时间。"),
+            ("t1[代码生成]", "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单。"),
+            ("t2[缺陷修复]", "围栏工作台的准入名单点了不生效：越界的设备没有生成闯入记录。"),
+            ("t3[代码重构]", "设备导出的取值写法散在多处，希望收拢到同一份写法里，行为不变。"),
+            ("t4[代码理解]", "想理清一条轨迹从采集到回放的完整链路，每一步在哪里取值。"),
         ]
-        result = check(items, max_per_module=3)
-        self.assertFalse(result["ok"])
-        self.assertTrue(any(v["kind"] == "模块超额" for v in result["violations"]), result["violations"])
-        self.assertEqual(result["module_counts"].get("告警中心"), 4)
-
-    def test_module_quota_passes_diverse_batch(self):
-        from check_repo_theme import check
-
-        items = [
-            ("t1", "新增告警处置预案：按告警类型维护可复用的处置步骤，逐条勾选后自动结单。"),
-            ("t2", "新增围栏准入名单：设备越过不在名单内的围栏时生成一条闯入记录。"),
-            ("t3", "新增运行数据导出：把选定时间段内的设备清单与告警明细打包导出。"),
-            ("t4", "新增轨迹接续回放：同一天的多段行程接续播放，中途暂停后可以继续。"),
-        ]
-        result = check(items, max_per_module=3)
+        result = check(items, max_unknown=99)
         self.assertTrue(result["ok"], result["violations"])
+        self.assertEqual(result["new_capability_ratio"], 0.25)
 
-    def test_same_module_same_capability_becomes_candidate(self):
-        """同模块同能力不硬拦，但必须进候选清单让出题人换题材。"""
-        from check_repo_theme import check
+    def test_corpus_recall_and_historical_batches_are_rejected(self):
+        """判词回归：拿 38 对真实判废对量复核清单的召回，并要求历史两批被判不通过。
 
-        items = [
-            ("a", "新增告警升级处理：超过设定时长仍未被确认的告警自动提升级别。"),
-            ("b", "新增告警超时归档：超过保留期的告警自动转入归档区，只显示近期内容。"),
-        ]
-        result = check(items, max_per_module=3)
-        self.assertTrue(result["candidate_pairs"], "同模块同能力必须进候选清单")
-        pair = result["candidate_pairs"][0]
-        self.assertIn("告警中心", pair["modules"])
-        self.assertIn("新增处理机制", pair["capabilities"])
+        这两批是实际提交过的（cc-6600009 48 条废 21 条、cc-6600011 49 条废 17 条）。
+        判据改动必须过这道门：复核清单召回 < 0.90 就不许写表。
+        """
+        import json
+        from pathlib import Path
+
+        from check_repo_theme import evaluate_corpus
+
+        corpus_path = Path(__file__).resolve().parent / "fixtures" / "rule-c-corpus.json"
+        corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+        calibration = evaluate_corpus(corpus)
+        self.assertEqual(calibration["judged_pairs"], len(
+            [pair for batch in corpus["batches"] for pair in batch["judged_pairs"]]
+        ))
+        self.assertGreaterEqual(calibration["candidate_recall"], 0.90, calibration)
+        by_project = {item["project"]: item for item in calibration["batches"]}
+        self.assertFalse(by_project["cc-6600009"]["batch_ok"], by_project["cc-6600009"])
+        self.assertFalse(by_project["cc-6600011"]["batch_ok"], by_project["cc-6600011"])
+        for project in ("cc-6600009", "cc-6600011"):
+            kinds = {item["kind"] for item in by_project[project]["batch_violations"]}
+            self.assertIn("仓库超出容量", kinds, by_project[project])
 
     def test_ledger_repeating_current_batch_is_not_counted_twice(self):
         """复查同一批时，台账里装的就是这批自己的记录，不能再算一遍。
 
-        2026-09-16 实测 cc-9900003：写完台账后原地复查，每个模块的 3 条被算成 6 条，
+        2026-09-16 实测 cc-9900003：写完台账后原地复查，每个主体的 3 条被算成 6 条，
         凭空报出 40 处「功能点重复」与 14 处「模块超额」，把整批题判成不通过。
         """
         from check_repo_theme import check
@@ -129,11 +222,13 @@ class RepoThemeTest(unittest.TestCase):
         # 台账内容与当前这批完全相同（写入台账后立即复查就是这个状态）
         ledger = {
             "entries": [
-                {"label": "t1", "module": "告警中心", "feature_point": "告警中心|新增处理机制"},
-                {"label": "t2", "module": "围栏工作台", "feature_point": "围栏工作台|新增处理机制"},
+                {"label": "t1", "module": "告警中心", "mode": "状态流转",
+                 "subject_mode": "告警中心|状态流转"},
+                {"label": "t2", "module": "围栏工作台", "mode": "规则与阈值",
+                 "subject_mode": "围栏工作台|规则与阈值"},
             ]
         }
-        result = check(items, max_per_module=3, base_ledger=ledger)
+        result = check(items, base_ledger=ledger)
         self.assertEqual(result["module_counts"].get("告警中心"), 1, result["module_counts"])
         self.assertEqual(result["module_counts"].get("围栏工作台"), 1, result["module_counts"])
         self.assertEqual(result["violations"], [])
@@ -142,12 +237,17 @@ class RepoThemeTest(unittest.TestCase):
         # 台账里是别的批次的记录时，仍然要算进配额
         other_ledger = {
             "entries": [
-                {"label": "old-1", "module": "告警中心", "feature_point": "告警中心|新增入口与共享"},
-                {"label": "old-2", "module": "告警中心", "feature_point": "告警中心|新增清单流程"},
+                {"label": "old-1", "module": "告警中心", "mode": "新增展示视图",
+                 "subject_mode": "告警中心|新增展示视图"},
+                {"label": "old-2", "module": "告警中心", "mode": "新增展示视图",
+                 "subject_mode": "告警中心|新增展示视图"},
             ]
         }
-        result = check(items, max_per_module=3, base_ledger=other_ledger)
+        result = check(items, base_ledger=other_ledger)
         self.assertEqual(result["module_counts"].get("告警中心"), 3, result["module_counts"])
+        self.assertTrue(
+            any(v["kind"] == "同主体超额" for v in result["violations"]), result["violations"]
+        )
 
 
 class DifficultyStructureTest(unittest.TestCase):
@@ -172,8 +272,8 @@ class DifficultyStructureTest(unittest.TestCase):
                 any("台账缺失" in item for item in gate["problems"]), gate["problems"]
             )
 
-    def test_write_gate_blocks_module_over_quota_and_duplicate_feature_point(self):
-        """同一模块第 4 条、同一功能点第 2 条都要被写入闸拦下。"""
+    def test_write_gate_blocks_subject_over_quota(self):
+        """同一主体第 3 条、同一「主体 + 模式」第 2 条都要被写入闸拦下。"""
         import os
         import tempfile
 
@@ -209,7 +309,7 @@ class DifficultyStructureTest(unittest.TestCase):
             )
             self.assertFalse(gate["ok"])
             self.assertTrue(
-                any("模块超额" in item or "功能点重复" in item for item in gate["problems"]),
+                any("主题去重未通过" in item for item in gate["problems"]),
                 gate["problems"],
             )
 

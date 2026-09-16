@@ -1,25 +1,45 @@
 #!/usr/bin/env python3
 """同仓库题目语义去重（平台查重规则 C 的本地预检）。
 
-平台规则 C 是按「模块 + 能力类型 + 交互骨架」判的，不看措辞。2026-09-15 实测
-cc-6600009 那批 48 条里 21 条栽在这里，判词里的字面相似度低到 9.5%，平台原话是
-「同为告警中心新增能力，但功能不同」「同属设备管理的待处理清单流程」「同一模块：地图上
-按时间段叠加设备位置历史图层」。换句话说：同一个模块里反复出同类能力、或者反复套同一种
-交互骨架，即使换成完全不同的对象和措辞，也会被判作废，而且**不可返修**。
+平台规则 C 判的是「主体 + 需求模式」，不看措辞，也不看这个模块在仓库里存不存在。
+2026-09-16 把平台上 97 条提交记录、41 条废弃（其中规则 C 38 条）的判词全部拉下来复盘，
+口径如下：
 
-这个脚本把上面那套口径做成结构化预检：
+- **字面相似度不作数**：判废对里最低的只有 9.5%，平台原话「只改写措辞无效」；
+- **同主体 + 同模式就算废**，哪怕功能点完全不同：「同属设备监控平台按设备统计一段时间
+  采样的分析视图，一个看位置停留热区、一个看电量下降速度」「共同主体是生成受控只读访问
+  入口，但一为现场扫码巡检登记、一为监控视图只读分享」「同为围栏模块的属性扩展，功能点
+  不同」；
+- **0-1 代码生成不豁免**：cc-6600009 那批 17 条代码生成废了 10 条（59%），比功能迭代还高，
+  21 对判废对里 10 对两边都是 0-1 代码生成。凭空造的功能只要挂在同一个主体或用了同一个
+  需求模式，照样作废；
+- **跨模块也生效**：判废对里 29%（cc-6600009）到 59%（cc-6600011）是跨模块的同模式对。
 
-1. **同模块 + 同能力类型** → 违规；
-2. **交互骨架命中 2 个以上信号**（清单+登记+空态+防重复这类）→ 违规；
-3. **同一模块出题超过 `--max-per-module`（默认 3）条** → 超额违规，必须换模块。
+这个脚本把上面那套口径做成三层预检（数字都是拿 38 条真实判废对回测出来的）：
+
+1. **硬拦**：台账缺失 / 主体识别为空 / 单仓库条数超 `--max-per-repo`（默认 35）/
+   **同主体 + 同需求模式重复** / 同主体超 `--max-per-subject`（默认 2）/
+   单模式占比超 `--max-mode-ratio`（默认 0.20）/ 整批句式片段超 `--max-ngram-ratio`
+   （默认 0.20）/ 新增能力类占比超 `--max-new-capability-ratio`（默认 0.50）。
+   这一层对真实判废对的召回约 35%–52%——**关键词复刻不了平台的语义判据，硬拦不是保证**。
+2. **必复核清单**（`review_list` + `candidate_pairs`）：同主体 或 需求模式有交集就进清单，
+   这一层对真实判废对的召回 95%–100%。SKILL 要求逐条写结论，不签名不许提交。
+3. **回归门**：`--judgement-corpus` 指向 `tests/fixtures/rule-c-corpus.json` 时，
+   脚本对语料里的判废对实测召回，低于 `--min-candidate-recall`（默认 0.90）直接判不通过。
+   判据改动过不了这道门就不许写表。
+
+单仓库条数上限的意义：平台是在同一个仓库里两两比的，铺得越多最近邻越近。历史两批
+48/49 条在一个仓库里，废弃 44%/35%；上限压到 35 条并配上面三层，才有机会进个位数。
 
 用法：
 
     python3 scripts/check_repo_theme.py --parent "<父目录>"
     python3 scripts/check_repo_theme.py --parent "<父目录>" --write-ledger
+    python3 scripts/check_repo_theme.py --parent "<父目录>" --repo "<origin>" \
+        --judgement-corpus tests/fixtures/rule-c-corpus.json
     python3 scripts/check_repo_theme.py --prompts-file <每行一条提示词的文本文件> --ledger <父目录>/repo-theme-ledger.json
 
-`--write-ledger` 会把每条的模块与能力类型写进父目录的 `repo-theme-ledger.json`，
+`--write-ledger` 会把每条的主体、需求模式与能力类型写进父目录的 `repo-theme-ledger.json`，
 后续批次继续在同一份台账上比，做到「同仓库全局去重」而不是只看当前这一批。
 
 命中任一判据时返回 `ok: false` 并以退出码 1 结束。
@@ -44,8 +64,31 @@ LEDGER_FILENAME = "repo-theme-ledger.json"
 FEATURE_POINTS_FILENAME = "repo-feature-points.json"
 MANIFEST_FILENAME = "prompt-generation-manifest.json"
 DEFAULT_MAX_PER_MODULE = 3
+# 单仓库条数上限：平台是在同一个仓库里两两比，铺得越多最近邻越近。
+# 2026-09-16 复盘两个历史批次（48/49 条同仓库，废弃 44%/35%）后定的护栏。
+DEFAULT_MAX_PER_REPO = 35
+# 同一个主体最多出几条：判词里「同为围栏模块的属性扩展，功能点不同」也判废，
+# 所以同主体第 3 条起必须换主体。
+DEFAULT_MAX_PER_SUBJECT = 2
+# 单个需求模式占整批的比例上限：跨模块同模式的判废对占 29%–59%，要把模式铺开。
+DEFAULT_MAX_MODE_RATIO = 0.20
+# 整批句式指纹上限：优化后的 cc-9900003 里「刷新后与返回后」出现在 74% 的题面里，
+# 老批次最高才 10%。判词里「约束句式一致」是明确的判废理由。
+DEFAULT_MAX_NGRAM_RATIO = 0.20
+NGRAM_SIZE = 6
+# 新增能力类（0-1 代码生成 + 功能迭代）占比上限：历史实测这两类废弃 43%–57%，
+# 缺陷修复 14%–29%，重构/理解/工程化 0%。把配比压下来比改措辞有用得多。
+DEFAULT_MAX_NEW_CAPABILITY_RATIO = 0.50
+NEW_CAPABILITY_TYPES = {"代码生成", "功能迭代"}
+# 最近邻复核清单每条题列几个邻居
+DEFAULT_REVIEW_NEIGHBORS = 3
+# 复核清单对真实判废对的召回下限：拿 38 条判废对回测，现在这套口径是 95%–100%，
+# 低于这个数说明判据被改坏了，不许写表（只改措辞、换同义词都不算修好）。
+DEFAULT_MIN_CANDIDATE_RECALL = 0.90
+# 真实判词语料：平台上被判规则 C 的题面与判废对，随 skill 一起走。
+DEFAULT_CORPUS_PATH = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "rule-c-corpus.json"
 # 闸门版本：写进台账与生成清单，跨机器一眼能看出这批题是不是按新版规则出的。
-GATE_VERSION = "2026-09-16-feature-points"
+GATE_VERSION = "2026-09-16-subject-mode"
 # 同仓库跨批次台账：按仓库归集，不跟着父目录走，避免换一个父目录就重新开始算配额。
 # 需要隔离（例如测试、或想放到共享盘）时用 SOLO_CREATE_REPO_LEDGER_ROOT 覆盖。
 REPO_LEDGER_ROOT = Path(
@@ -188,6 +231,24 @@ SKELETON_LEXICON: dict[str, tuple[str, ...]] = {
     "批量提交加逐条结果": ("批量", "逐台", "逐条", "成功失败", "重新下发"),
 }
 
+# 需求模式：从 38 条规则 C 判词里归纳出来的一层。平台判废时说的「同属…新增能力」
+# 「同属…的分析视图」「共同的受控只读访问入口」「同为…属性扩展」「同一种约束句式」
+# 说的都是这一层，而不是具体功能。同一主体 + 同一模式是硬拦；模式有交集要进复核清单。
+DEMAND_MODE_LEXICON: dict[str, tuple[str, ...]] = {
+    "新增展示视图": ("视图", "展示", "列出", "呈现", "概览", "看板", "排列", "显示出来"),
+    "规则与阈值": ("阈值", "口径", "判定", "规则", "上限", "范围", "条件", "标准", "不允许保存"),
+    "状态流转": ("流转", "状态", "生命周期", "归档", "恢复", "回到", "切换", "变更"),
+    "权限与归属": ("权限", "越权", "归属", "只读", "受控", "只能查看", "不能改动", "共享"),
+    "批量操作": ("批量", "多条", "多选", "逐条", "一次提交", "逐台", "整组"),
+    "导入导出": ("导入", "导出", "文件", "下载", "上传", "打包", "书签"),
+    "列表定位与筛选": ("筛选", "排序", "翻页", "分页", "定位", "检索", "搜索", "查询", "过滤"),
+    "持久化与一致性": ("刷新", "返回", "重新进入", "持久", "一致", "对得上", "保留原", "同步"),
+    "边界与空态": ("空态", "暂无", "没有", "失败", "重试", "中断", "说明原因", "异常"),
+    "缺陷处置": ("报错", "不生效", "残留", "点不动", "显示成", "对不上", "错位", "丢失", "重复显示"),
+    "重构与工程化": ("收拢", "重复代码", "抽取", "构建", "上线", "流水线", "检查", "依赖"),
+    "代码理解": ("读懂", "理清", "梳理", "分步说明", "流程图", "链路", "经过哪些环节"),
+}
+
 
 def _score(text: str, keys: tuple[str, ...]) -> int:
     """同一组词里命中的关键词个数（同一个词只算一次）。"""
@@ -228,6 +289,29 @@ def detect_skeletons(text: str) -> list[str]:
     return [name for name, keys in SKELETON_LEXICON.items() if _score(text, keys) >= 2]
 
 
+def detect_modes(text: str) -> tuple[str, list[str]]:
+    """需求模式：主模式（命中最多的那个）+ 全部有交集的模式。
+
+    主模式用来判「同主体 + 同模式」；有交集的模式集合用来出复核清单，
+    因为平台的判词是拿「同属…的分析视图」这类粗口径比对的。
+    """
+    scored = [(name, _score(text, keys)) for name, keys in DEMAND_MODE_LEXICON.items()]
+    scored = [(name, score) for name, score in scored if score > 0]
+    if not scored:
+        return "", []
+    scored.sort(key=lambda item: (-item[1], item[0]))
+    return scored[0][0], [name for name, _ in scored]
+
+
+def cjk_ngrams(text: str, size: int = NGRAM_SIZE) -> set[str]:
+    """题面里的纯汉字 n 字片段，用来数整批的句式指纹。"""
+    grams: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text or ""):
+        for index in range(len(run) - size + 1):
+            grams.add(run[index:index + size])
+    return grams
+
+
 def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
              *, is_repair: bool = False, exempt: bool = False) -> dict[str, object]:
     primary, secondary = detect_modules(text)
@@ -237,14 +321,19 @@ def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
             primary = primary or derived_name
             if derived_name not in secondary:
                 secondary.append(derived_name)
+    mode, modes = detect_modes(text)
     return {
         "label": label,
         "module": primary,
         "modules": ([primary] if primary else []) + secondary,
         "capabilities": detect_capabilities(text),
         "skeletons": detect_skeletons(text),
+        "mode": mode,
+        "modes": modes,
+        "subject_mode": f"{primary}|{mode}" if primary and mode else "",
         "feature_point": feature_point(primary, detect_capabilities(text)),
         "capability_words": sorted(capability_content_words(text)),
+        "ngrams": sorted(cjk_ngrams(text)),
         "repair_round": is_repair,
         "module_exempt": exempt,
     }
@@ -285,10 +374,161 @@ def feature_point(module: str, capabilities: list[str]) -> str:
     return f"{module}|{sorted(capabilities)[0]}"
 
 
+def pair_features(a: dict, b: dict, text_a: str, text_b: str) -> dict[str, object]:
+    """两条题的相似特征：主体、需求模式、能力大类、能力短语实词、正文字符相似度。
+
+    平台判词是语义级的，这里只做**可数的近似**：实测「同主体 或 模式有交集」这组口径
+    对 38 条真实判废对能覆盖 95%–100%（cc-6600009 20/21，cc-6600011 17/17），
+    所以它当复核清单的判据；而「同主体 + 同模式」只有 35%–52%，只当硬拦。
+    """
+    modules = set(a["modules"]) & set(b["modules"])
+    modes = set(a["modes"]) & set(b["modes"])
+    capabilities = set(a["capabilities"]) & set(b["capabilities"])
+    skeletons = set(a["skeletons"]) & set(b["skeletons"])
+    words = set(a["capability_words"]) & set(b["capability_words"])
+    same_subject = bool(a["module"] and a["module"] == b["module"])
+    structure = 0.0
+    if same_subject:
+        structure += 0.55
+    if modes:
+        structure += 0.25 * min(1.0, len(modes) / 2.0)
+    structure += 0.20 * min(1.0, len(words) / 3.0)
+    try:
+        import difflib
+
+        text_score = difflib.SequenceMatcher(None, text_a, text_b).ratio()
+    except Exception:  # noqa: BLE001 - difflib 不可能失败，兜底不影响主流程
+        text_score = 0.0
+    return {
+        "modules": sorted(modules),
+        "modes": sorted(modes),
+        "capabilities": sorted(capabilities),
+        "skeletons": sorted(skeletons),
+        "shared_words": sorted(words),
+        "same_subject": same_subject,
+        "score": round(0.6 * min(1.0, structure) + 0.4 * text_score, 4),
+    }
+
+
+def build_review_list(records: list[dict], *, neighbors: int = DEFAULT_REVIEW_NEIGHBORS) -> list[dict]:
+    """每条题按相似度列出最像的几条邻居，供人工逐条复核并写差异结论。"""
+    review: list[dict] = []
+    for record in records:
+        scored: list[tuple[float, dict, dict]] = []
+        for other in records:
+            if other is record:
+                continue
+            features = pair_features(record, other, str(record.get("_text") or ""),
+                                     str(other.get("_text") or ""))
+            scored.append((float(features["score"]), other, features))
+        scored.sort(key=lambda item: (-item[0], str(item[1]["label"])))
+        picked = scored[:max(0, neighbors)]
+        if not picked:
+            continue
+        review.append({
+            "label": record["label"],
+            "subject": record["module"],
+            "mode": record["mode"],
+            "subject_mode": record["subject_mode"],
+            "neighbors": [
+                {
+                    "label": other["label"],
+                    "subject": other["module"],
+                    "mode": other["mode"],
+                    "score": features["score"],
+                    "same_subject": features["same_subject"],
+                    "shared_modes": features["modes"],
+                    "shared_words": features["shared_words"][:6],
+                }
+                for _, other, features in picked
+            ],
+        })
+    return review
+
+
+def evaluate_corpus(corpus: dict | None) -> dict[str, object]:
+    """拿真实判词语料回测判据：硬拦召回 + 复核清单召回。
+
+    语料格式见 `tests/fixtures/rule-c-corpus.json`（97 条实际提交过的题面，
+    38 对平台点名的同仓库雷同对）。判据改动后必须重跑这道门。
+    """
+    if not corpus:
+        return {}
+    batches = corpus.get("batches") or []
+    hard_hits = candidate_hits = judged_total = 0
+    per_batch: list[dict[str, object]] = []
+    for batch in batches:
+        records_in = batch.get("records") or []
+        if not records_in:
+            continue
+        repo = batch.get("repo_path")
+        derived = derive_repo_modules(Path(repo)) if repo and Path(repo).is_dir() else {}
+        labels = [
+            f"{row['n']}[{row.get('type') or ''}]" for row in records_in
+        ]
+        texts = {int(row["n"]): str(row.get("prompt") or "") for row in records_in}
+        # 整批维度：这两批当年都是照写不误，新的整批闸门会不会直接把它们拦下。
+        batch_result = check(
+            list(zip(labels, [str(row.get("prompt") or "") for row in records_in])),
+            derived=derived,
+            max_unknown=999,
+            exempt_labels={label for label in labels
+                           if label.split("[")[-1].rstrip("]") in
+                           {"工程化", "代码理解", "代码重构", "代码测试"}},
+        )
+        classified = {}
+        for item in batch_result["items"]:
+            number = str(item["label"]).split("[")[0]
+            if number.isdigit():
+                classified[int(number)] = item
+        pairs = [tuple(sorted((int(a), int(b)))) for a, b in (batch.get("judged_pairs") or [])]
+        hard = candidates = 0
+        for a, b in pairs:
+            if a not in classified or b not in classified:
+                continue
+            ra, rb = classified[a], classified[b]
+            features = pair_features(ra, rb, texts.get(a, ""), texts.get(b, ""))
+            if ra["subject_mode"] and ra["subject_mode"] == rb["subject_mode"]:
+                hard += 1
+            if features["modules"] or features["modes"]:
+                candidates += 1
+        judged_total += len(pairs)
+        hard_hits += hard
+        candidate_hits += candidates
+        per_batch.append({
+            "project": batch.get("project"),
+            "judged_pairs": len(pairs),
+            "hard_hits": hard,
+            "candidate_hits": candidates,
+            "batch_ok": batch_result["ok"],
+            "batch_violations": [
+                {"kind": item["kind"], "count": item.get("count")}
+                for item in batch_result["violations"]
+            ],
+        })
+    if not judged_total:
+        return {}
+    return {
+        "batches": per_batch,
+        "judged_pairs": judged_total,
+        "hard_recall": round(hard_hits / judged_total, 4),
+        "candidate_recall": round(candidate_hits / judged_total, 4),
+        "source": corpus.get("source", ""),
+    }
+
+
 def check(
     items: list[tuple[str, str]],
     *,
     max_per_module: int = DEFAULT_MAX_PER_MODULE,
+    max_per_repo: int = DEFAULT_MAX_PER_REPO,
+    max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_mode_ratio: float = DEFAULT_MAX_MODE_RATIO,
+    max_ngram_ratio: float = DEFAULT_MAX_NGRAM_RATIO,
+    max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+    review_neighbors: int = DEFAULT_REVIEW_NEIGHBORS,
+    min_candidate_recall: float | None = None,
+    judgement_corpus: dict | None = None,
     base_ledger: dict | None = None,
     derived: dict[str, set[str]] | None = None,
     repair_labels: set[str] | None = None,
@@ -305,78 +545,177 @@ def check(
                  exempt=label in exempt_labels)
         for label, text in items
     ]
-    # 硬拦只留「模块配额」这一条：平台判词本身是语义判断，关键词没法可靠复刻配对，
-    # 但「同一模块反复出题」这件事是可数的，而且实测正是 21 条废弃的主因
-    # （cc-6600009 光告警中心就出了 15 条）。把配额卡住，等于从源头掐掉大部分规则 C。
-    primary_counter: Counter[str] = Counter()
-    for record in records:
-        if record["module"]:
-            primary_counter[str(record["module"])] += 1
+    # 题面正文只在内存里用于算相似度，不写进台账（台账只留主体、模式与句式指纹）。
+    for record, (_, text) in zip(records, items):
+        record["_text"] = text
     # 台账里已有的条目也要算进配额，否则跨批次还会超；
     # 但当前这批里已经有的同一条不要再算一遍——验收/复查时工作簿与台账装的是同一批记录，
     # 重复计数会把每个模块的条数翻倍（2026-09-16 实测 cc-9900003：3 条被算成 6 条，
     # 复查时凭空报出 40 处功能点重复与 14 处模块超额）。
     current_labels = {str(record["label"]) for record in records}
-    for entry in (base_ledger or {}).get("entries", []) or []:
-        if str(entry.get("label")) in current_labels:
-            continue
+    ledger_entries = [
+        entry for entry in ((base_ledger or {}).get("entries", []) or [])
+        if str(entry.get("label")) not in current_labels
+    ]
+    # 先数整批的句式指纹，再拿它把模板从句剥掉以后识别需求模式。
+    # 不剥的话整批共用一句「…刷新后与返回后…原有的不变」会把所有题的主模式都拽成
+    # 「持久化与一致性」——实测 cc-9900003 那 46 条就是这样被拽成同一个模式，模式这一层等于失效。
+    ngram_counter: Counter[str] = Counter()
+    for record in records:
+        ngram_counter.update(record["ngrams"])
+    clause_counter: Counter[str] = Counter()
+    docs_with_clauses = 0
+    for entry in ledger_entries:
+        clauses = entry.get("template_clauses") or []
+        if clauses:
+            docs_with_clauses += 1
+        clause_counter.update(clauses)
+    total_docs = len(records) + docs_with_clauses
+    flagged_clauses: list[dict[str, object]] = []
+    if total_docs >= 3:
+        for gram, count in ngram_counter.items():
+            combined = count + clause_counter.get(gram, 0)
+            if combined < 3:
+                continue
+            ratio = combined / total_docs
+            if ratio > max_ngram_ratio:
+                flagged_clauses.append({
+                    "clause": gram, "count": combined, "ratio": round(ratio, 3),
+                })
+    flagged_clauses.sort(key=lambda item: (-item["count"], str(item["clause"])))
+    flagged_grams = {str(item["clause"]) for item in flagged_clauses}
+    for record in records:
+        record["template_clauses"] = sorted(flagged_grams & set(record["ngrams"]))
+        if record["template_clauses"]:
+            cleaned = str(record["_text"])
+            for clause in record["template_clauses"]:
+                cleaned = cleaned.replace(clause, "")
+            mode, modes = detect_modes(cleaned)
+            record["mode"], record["modes"] = mode, modes
+            record["subject_mode"] = f"{record['module']}|{mode}" if record["module"] and mode else ""
+    # 主体配额 +「主体 + 需求模式」唯一：平台判词里「同为围栏模块的属性扩展，功能点不同」
+    # 也照样作废，所以同一个主体最多 2 条，同一个「主体 + 模式」格子只能有 1 条。
+    primary_counter: Counter[str] = Counter()
+    subject_mode_counter: Counter[str] = Counter()
+    mode_counter: Counter[str] = Counter()
+    for record in records:
+        if record["module"]:
+            primary_counter[str(record["module"])] += 1
+        if record["subject_mode"]:
+            subject_mode_counter[str(record["subject_mode"])] += 1
+        if record["mode"]:
+            mode_counter[str(record["mode"])] += 1
+    for entry in ledger_entries:
         if entry.get("module"):
             primary_counter[str(entry["module"])] += 1
+        subject_mode = str(entry.get("subject_mode") or "")
+        if not subject_mode and entry.get("module") and entry.get("mode"):
+            subject_mode = f"{entry['module']}|{entry['mode']}"
+        if subject_mode:
+            subject_mode_counter[subject_mode] += 1
+        if entry.get("mode"):
+            mode_counter[str(entry["mode"])] += 1
     violations: list[dict[str, object]] = []
     if require_ledger and not ledger_present:
         violations.append({
             "kind": "台账缺失",
-            "why": f"同仓库出题必须先建 {LEDGER_FILENAME} 台账并逐条登记功能点；"
+            "why": f"同仓库出题必须先建 {LEDGER_FILENAME} 台账并逐条登记主体与需求模式；"
                    "没有台账就不许写提示词工作簿",
         })
     if not any(record["module"] for record in records) and not primary_counter:
         violations.append({
-            "kind": "模块未识别",
-            "why": "这批题的模块一个都没识别出来，先确认提示词不是占位文本，再按模块重新归档",
+            "kind": "主体未识别",
+            "why": "这批题的主体（改的是仓库里的哪一块）一个都没识别出来，"
+                   "先确认提示词不是占位文本，再按主体重新归档",
         })
     unknown = [record["label"] for record in records
                if not record["module"] and not record["repair_round"] and not record["module_exempt"]]
     if len(unknown) > max_unknown:
         violations.append({
-            "kind": "模块未识别",
+            "kind": "主体未识别",
             "count": len(unknown),
             "limit": max_unknown,
             "labels": unknown[:8],
-            "why": "题面必须能落回仓库里的某个模块；识别不出来的先补 --repo 指向仓库，"
+            "why": "题面必须能落回仓库里的某个主体；识别不出来的先补 --repo 指向仓库，"
                    "或确认这条题面到底改的是哪一块，不能带着空白模块去出题",
         })
-    # 功能点级去重：同一个模块 + 同一个能力大类只允许出 1 条主任务。
-    feature_counter: Counter[str] = Counter()
-    for record in records:
-        if record["feature_point"] and not record["repair_round"]:
-            feature_counter[str(record["feature_point"])] += 1
-    for entry in (base_ledger or {}).get("entries", []) or []:
-        if str(entry.get("label")) in current_labels:
-            continue
-        point = entry.get("feature_point")
-        if point and not entry.get("repair_round"):
-            feature_counter[str(point)] += 1
-    for point, count in feature_counter.items():
+    total = len(records) + len(ledger_entries)
+    if total > max_per_repo:
+        violations.append({
+            "kind": "仓库超出容量",
+            "count": total,
+            "limit": max_per_repo,
+            "why": f"同一个仓库最多出 {max_per_repo} 条：平台是在同一个仓库里两两比对的，"
+                   "铺得越多最近邻越近（实测 48/49 条的批次废弃 44%/35%）。"
+                   "超出的部分换仓库出，或直接砍掉。",
+        })
+    # 主体 + 需求模式唯一：这一格重复就是平台判词里的「同为X模块的属性扩展 / 同在X新增能力」。
+    for slot, count in subject_mode_counter.items():
         if count > 1:
             violations.append({
-                "kind": "功能点重复",
-                "feature_point": point,
+                "kind": "主体模式重复",
+                "subject_mode": slot,
                 "count": count,
-                "why": "同一个模块的同一类能力只能出 1 条主任务，平台按规则 C 判语义雷同且不可返修；"
-                       "换模块、换能力大类，或把这条题并入上一条",
+                "why": "同一个「主体 + 需求模式」只能出 1 条：平台判词原话「同为围栏模块的属性扩展，"
+                       "功能点不同」也判作废。换主体、换需求模式，或把这条并入上一条",
             })
-    for module, count in primary_counter.items():
-        if count > max_per_module:
+    for subject, count in primary_counter.items():
+        if count > max_per_subject:
             violations.append({
-                "kind": "模块超额",
-                "module": module,
+                "kind": "同主体超额",
+                "subject": subject,
                 "count": count,
-                "limit": max_per_module,
-                "why": f"同一模块最多出 {max_per_module} 条，超出的必须换模块或换题材",
+                "limit": max_per_subject,
+                "why": f"同一个主体最多出 {max_per_subject} 条，超出的必须换主体或换题材；"
+                       "跨主体同需求模式也会判废，换主体时模式也要跟着换",
             })
+    # 配比类判据只对整批量级生效：三五条的返修小批每一类都占两三成，卡它没意义。
+    if len(records) >= 10:
+        for mode, count in mode_counter.items():
+            ratio = count / total
+            if ratio > max_mode_ratio:
+                violations.append({
+                    "kind": "模式占比超额",
+                    "mode": mode,
+                    "count": count,
+                    "ratio": round(ratio, 3),
+                    "limit": max_mode_ratio,
+                    "why": f"「{mode}」占了整批的 {ratio:.0%}：判废对里有 29%–59% 是跨主体的"
+                           "同需求模式对（同属待处理清单流程 / 同一种分析视图），模式要铺开",
+                })
+    # 句式指纹：整批复用同一个从句就是判词里的「约束句式一致」，跟措辞好坏无关。
+    if flagged_clauses:
+        violations.append({
+            "kind": "句式指纹重复",
+            "clauses": flagged_clauses[:8],
+            "limit": max_ngram_ratio,
+            "why": f"整批里有 {len(flagged_clauses)} 个 {NGRAM_SIZE} 字片段的使用比例超过 "
+                   f"{max_ngram_ratio:.0%}，平台判词里「约束句式一致」本身就是判废理由"
+                   "（实测 cc-9900003 有 74% 的题面含同一个从句）。把这些从句拆成多种说法，"
+                   "或按环节换句式。",
+        })
+    # 类型配比：新增能力类（0-1 代码生成 + 功能迭代）历史废弃 43%–57%，
+    # 缺陷修复 14%–29%，重构/理解/工程化 0%。整批配比是可控的最大杠杆。
+    type_counter: Counter[str] = Counter()
+    for record in records:
+        match = re.search(r"\[(.+?)\]$", str(record["label"]))
+        if match:
+            type_counter[match.group(1)] += 1
+    new_capability = sum(count for name, count in type_counter.items() if name in NEW_CAPABILITY_TYPES)
+    if len(records) >= 10 and new_capability / len(records) > max_new_capability_ratio:
+        violations.append({
+            "kind": "新增能力类占比超额",
+            "count": new_capability,
+            "total": len(records),
+            "ratio": round(new_capability / len(records), 3),
+            "limit": max_new_capability_ratio,
+            "why": f"新增能力类（0-1 代码生成 + 功能迭代）占 {new_capability / len(records):.0%}，"
+                   f"上限 {max_new_capability_ratio:.0%}。实测这类废弃 43%–57%，而缺陷修复 14%–29%、"
+                   "重构/理解/工程化 0%；把配比压下来比改措辞有用。缺陷修复类要同时守难度下限。",
+        })
 
-    # 候选清单：同模块 + 同能力大类的组合，供人工复核。平台判词是语义级的，
-    # 关键词复刻不了它的配对，但这份清单是超集，看到成对的就按「同型」处理、换题材。
+    # 候选清单：同主体 或 需求模式有交集就进清单。平台判词是语义级的，关键词复刻不了它的
+    # 配对，但这份清单是超集——拿 38 条真实判废对回测，召回 95%–100%，是唯一托底的一层。
     candidates: list[dict[str, object]] = []
     for index, record in enumerate(records):
         for other in records[:index]:
@@ -384,49 +723,91 @@ def check(
             shared_capabilities = set(record["capabilities"]) & set(other["capabilities"])
             shared_skeletons = set(record["skeletons"]) & set(other["skeletons"])
             shared_words = set(record["capability_words"]) & set(other["capability_words"])
-            if shared_modules and len(shared_words) >= FEATURE_NEAR_CANDIDATE:
-                candidates.append({
-                    "a": other["label"],
-                    "b": record["label"],
-                    "modules": sorted(shared_modules),
-                    "capabilities": sorted(shared_capabilities),
-                    "skeletons": sorted(shared_skeletons),
-                    "shared_words": sorted(shared_words)[:6],
-                    "why": f"同模块里两条题的能力短语有 {len(shared_words)} 个实词重合，"
-                           "平台按规则 C 判语义雷同且不可返修；逐对读一遍，"
-                           "像同一个功能点就换模块、换能力点，或并成一条",
-                })
+            shared_modes = set(record["modes"]) & set(other["modes"])
+            near_words = bool(shared_modules) and len(shared_words) >= FEATURE_NEAR_CANDIDATE
+            if not (shared_modules or shared_modes):
                 continue
-            if not shared_modules or not shared_capabilities:
-                continue
+            if shared_modes:
+                reason = (
+                    f"同主体且需求模式有交集（{'/'.join(sorted(shared_modes))}）："
+                    "平台判词把这类直接算同题，功能点不同也照判"
+                    if shared_modules else
+                    f"跨主体的同需求模式对（{'/'.join(sorted(shared_modes))}）："
+                    "判废对里有 29%–59% 正是这种跨模块同模式对"
+                )
+            else:
+                reason = (f"同主体（{'/'.join(sorted(shared_modules))}）"
+                          + ("，且能力短语实词重合较多" if near_words else ""))
             candidates.append({
                 "a": other["label"],
                 "b": record["label"],
+                "risk": "高" if shared_modes else "中",
                 "modules": sorted(shared_modules),
+                "modes": sorted(shared_modes),
                 "capabilities": sorted(shared_capabilities),
                 "skeletons": sorted(shared_skeletons),
                 "shared_words": sorted(shared_words)[:6],
-                "why": "同模块里出同类能力，平台按规则 C 判语义雷同且不可返修；换模块或换题材",
+                "why": reason,
             })
+
+    # 最近邻复核清单：每条题列出最像的几条，人工核这一份（覆盖面约八成判废对），
+    # 逐条写出「本条与最近邻在主体/需求模式/对象上差在哪」；写不出就换主体或换模式。
+    review_list = build_review_list(records, neighbors=review_neighbors)
+    flagged_labels = sorted({str(item["a"]) for item in candidates} |
+                            {str(item["b"]) for item in candidates})
+
+    calibration = evaluate_corpus(judgement_corpus) if judgement_corpus else {}
+    if calibration and min_candidate_recall is not None:
+        if calibration["candidate_recall"] < min_candidate_recall:
+            violations.append({
+                "kind": "判据召回不达标",
+                "hard_recall": calibration["hard_recall"],
+                "candidate_recall": calibration["candidate_recall"],
+                "limit": min_candidate_recall,
+                "why": "拿真实判词语料回测，现在这套判据对平台判废对的召回低于下限："
+                       "先改判据，不要让这批题带着未知风险写进工作簿",
+            })
+
+    # 题面正文与整批 n 字片段只用于内存计算，不进返回值（否则 stdout 与台账都会被撑爆）
+    for record in records:
+        record.pop("_text", None)
+        record.pop("ngrams", None)
 
     return {
         "ok": not violations,
-        "rule": "平台查重规则 C（同仓库题目语义雷同）+ 同模块出题上限",
+        "rule": "平台查重规则 C：同主体 + 同需求模式判废（含跨主体同模式）",
+        "gate_version": GATE_VERSION,
+        "limits": {
+            "max_per_repo": max_per_repo,
+            "max_per_subject": max_per_subject,
+            "max_mode_ratio": max_mode_ratio,
+            "max_ngram_ratio": max_ngram_ratio,
+            "max_new_capability_ratio": max_new_capability_ratio,
+        },
         "max_per_module": max_per_module,
         "checked_count": len(records),
         "module_counts": dict(primary_counter.most_common()),
-        "feature_points": dict(feature_counter.most_common()),
+        "subject_mode_counts": dict(subject_mode_counter.most_common()),
+        "mode_counts": dict(mode_counter.most_common()),
+        "task_type_counts": dict(type_counter.most_common()),
+        "new_capability_ratio": (round(new_capability / len(records), 3) if records else 0.0),
         "unknown_labels": unknown,
         "repo_modules": sorted((derived or {}).keys())[:40],
         "violations": violations,
         "candidate_pairs": candidates,
+        "candidate_pair_count": len(candidates),
+        "review_required_labels": flagged_labels,
+        "review_list": review_list,
+        "calibration": calibration,
         "items": records,
         "notes": [
             "规则 C 被判废弃的记录不可返修，改措辞无效，只能换题材重出。",
-            "平台拿先提交的那条当基准，后提交的语义近题判废弃，所以同仓库必须一次性全局去重。",
-            "硬拦是「台账缺失 + 模块未识别 + 功能点重复 + 模块超额」四道；"
-            "candidate_pairs 是超集候选，逐对人工复核，"
-            "认下同型就换题材，不要只看字面像不像。",
+            "平台拿先提交的那条当基准，后提交的语义近题判废弃，所以同仓库必须一次性全局去重；"
+            "提交侧再配合分批（每批 ≤10 条），把漏网的损失锁在一批里。",
+            "硬拦复刻不了语义判据（实测召回三到五成），真正要守的是第二层："
+            "review_required_labels 里的每条题都要写出与最近邻的差异，写不出就换主体或换模式。",
+            "0-1 代码生成不豁免规则 C：凭空造的功能只要落在同一主体或同一需求模式上照样判废"
+            "（cc-6600009 代码生成废弃率 59%，比功能迭代还高）。",
         ],
     }
 
@@ -487,7 +868,7 @@ def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | No
     existing = merge_ledgers(load_ledger(path))
     merged = {str(item.get("label")): item for item in existing.get("entries", [])}
     for entry in entries:
-        merged[str(entry.get("label"))] = entry
+        merged[str(entry.get("label"))] = ledger_entry(entry)
     payload = {
         "gate_version": GATE_VERSION,
         "repo": str(Path(repo).expanduser().resolve()),
@@ -495,27 +876,62 @@ def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | No
     }
     if gate_result is not None:
         payload["module_counts"] = gate_result.get("module_counts", {})
+        payload["subject_mode_counts"] = gate_result.get("subject_mode_counts", {})
+        payload["mode_counts"] = gate_result.get("mode_counts", {})
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 
+LEDGER_ENTRY_FIELDS = (
+    "label", "module", "modules", "mode", "modes", "subject_mode", "capabilities",
+    "skeletons", "feature_point", "capability_words", "template_clauses",
+    "repair_round", "module_exempt",
+)
+
+
+def ledger_entry(record: dict) -> dict:
+    """台账条目只留结构化字段：题面正文与整批 n 字片段不进台账，避免文件膨胀。"""
+    return {key: record[key] for key in LEDGER_ENTRY_FIELDS if key in record}
+
+
 def build_feature_points(repo: Path, derived: dict[str, set[str]], result: dict) -> dict:
-    """出题前先落一份功能点清单：模块（含关键词）+ 每个模块已占用的功能点与题位。"""
+    """出题前先落一份题位表：主体（含关键词）+ 需求模式 + 已被占用的「主体 × 模式」格子。
+
+    出题时按这张表分配题位，而不是写完几十条再查重：一个格子只能坐一条题，
+    写不出差异就得换主体或换模式。这就是把「事后查重」换成「事前排座」。
+    """
     occupied: dict[str, list[str]] = {}
+    subjects: dict[str, list[str]] = {}
+    modes: dict[str, list[str]] = {}
     for entry in result.get("items", []) or []:
-        point = entry.get("feature_point") or ""
-        if point:
-            occupied.setdefault(str(point), []).append(str(entry.get("label")))
+        slot = entry.get("subject_mode") or ""
+        if slot:
+            occupied.setdefault(str(slot), []).append(str(entry.get("label")))
+        if entry.get("module"):
+            subjects.setdefault(str(entry["module"]), []).append(str(entry.get("label")))
+        if entry.get("mode"):
+            modes.setdefault(str(entry["mode"]), []).append(str(entry.get("label")))
     return {
         "gate_version": GATE_VERSION,
         "repo": str(Path(repo).expanduser().resolve()),
-        "rule": "每条题面必须落回一个模块，同一功能点（模块 + 能力大类）只出 1 条，同一模块最多 3 条",
+        "rule": "每条题面必须落回一个主体；同一「主体 + 需求模式」只出 1 条，"
+                f"同一主体最多 {DEFAULT_MAX_PER_SUBJECT} 条，单仓库最多 {DEFAULT_MAX_PER_REPO} 条，"
+                f"单模式占比不超过 {DEFAULT_MAX_MODE_RATIO:.0%}，"
+                f"新增能力类占比不超过 {DEFAULT_MAX_NEW_CAPABILITY_RATIO:.0%}",
         "modules": [
             {"module": name, "keywords": sorted(keywords)[:40]}
             for name, keywords in sorted(derived.items())
         ],
-        "occupied_feature_points": occupied,
+        "demand_modes": sorted(DEMAND_MODE_LEXICON),
+        "occupied_subject_modes": occupied,
+        "occupied_subjects": subjects,
+        "occupied_modes": modes,
         "module_counts": result.get("module_counts", {}),
+        "mode_counts": result.get("mode_counts", {}),
+        "subject_mode_counts": result.get("subject_mode_counts", {}),
+        "task_type_counts": result.get("task_type_counts", {}),
+        "new_capability_ratio": result.get("new_capability_ratio", 0.0),
+        "limits": result.get("limits", {}),
         "unknown_labels": result.get("unknown_labels", []),
     }
 
@@ -527,6 +943,13 @@ def run_gate(
     repo: Path | None = None,
     require_ledger: bool = True,
     max_per_module: int = DEFAULT_MAX_PER_MODULE,
+    max_per_repo: int = DEFAULT_MAX_PER_REPO,
+    max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
+    max_mode_ratio: float = DEFAULT_MAX_MODE_RATIO,
+    max_ngram_ratio: float = DEFAULT_MAX_NGRAM_RATIO,
+    max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+    judgement_corpus: dict | None = None,
+    min_candidate_recall: float | None = None,
     max_unknown: int = 0,
 ) -> dict:
     """写入路径专用的整批闸门：读工作簿 → 派生模块 → 合并父目录与仓库台账 → 出结论。"""
@@ -538,6 +961,13 @@ def run_gate(
     result = check(
         items,
         max_per_module=max_per_module,
+        max_per_repo=max_per_repo,
+        max_per_subject=max_per_subject,
+        max_mode_ratio=max_mode_ratio,
+        max_ngram_ratio=max_ngram_ratio,
+        max_new_capability_ratio=max_new_capability_ratio,
+        judgement_corpus=judgement_corpus,
+        min_candidate_recall=min_candidate_recall,
         base_ledger=merged,
         derived=derived,
         repair_labels=repair_labels,
@@ -591,11 +1021,45 @@ def main() -> None:
     parser.add_argument("--version", action="store_true", help="打印闸门版本")
     parser.add_argument("--max-per-module", type=int, default=DEFAULT_MAX_PER_MODULE,
                         help=f"同一模块最多出几条，默认 {DEFAULT_MAX_PER_MODULE}")
+    parser.add_argument("--max-per-repo", type=int, default=DEFAULT_MAX_PER_REPO,
+                        help=f"单仓库最多出几条（跨批次累计），默认 {DEFAULT_MAX_PER_REPO}")
+    parser.add_argument("--max-per-subject", type=int, default=DEFAULT_MAX_PER_SUBJECT,
+                        help=f"同一主体最多出几条，默认 {DEFAULT_MAX_PER_SUBJECT}")
+    parser.add_argument("--max-mode-ratio", type=float, default=DEFAULT_MAX_MODE_RATIO,
+                        help=f"单个需求模式占整批的比例上限，默认 {DEFAULT_MAX_MODE_RATIO}")
+    parser.add_argument("--max-ngram-ratio", type=float, default=DEFAULT_MAX_NGRAM_RATIO,
+                        help=f"单个 {NGRAM_SIZE} 字句式片段的使用比例上限，默认 "
+                             f"{DEFAULT_MAX_NGRAM_RATIO}")
+    parser.add_argument("--max-new-capability-ratio", type=float,
+                        default=DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+                        help="新增能力类（0-1 代码生成 + 功能迭代）占比上限，默认 "
+                             f"{DEFAULT_MAX_NEW_CAPABILITY_RATIO}")
+    parser.add_argument("--review-neighbors", type=int, default=DEFAULT_REVIEW_NEIGHBORS,
+                        help=f"最近邻复核清单每条列几个邻居，默认 {DEFAULT_REVIEW_NEIGHBORS}")
+    parser.add_argument("--judgement-corpus",
+                        help="真实判词语料（默认找 skill 里的 tests/fixtures/rule-c-corpus.json）；"
+                             "给了就回测判据召回")
+    parser.add_argument("--min-candidate-recall", type=float, default=DEFAULT_MIN_CANDIDATE_RECALL,
+                        help="复核清单对语料判废对的召回下限，默认 "
+                             f"{DEFAULT_MIN_CANDIDATE_RECALL}")
+    parser.add_argument("--no-calibration", action="store_true",
+                        help="跳过判词回归（只在调试判据时用，正式出题不许跳）")
     parser.add_argument("--max-unknown", type=int, default=0,
-                        help="允许几条题面识别不到模块，默认 0（一条都不许）")
+                        help="允许几条题面识别不到主体，默认 0（一条都不许）")
     args = parser.parse_args()
     if args.version:
-        print(json.dumps({"gate_version": GATE_VERSION, "rule": "同仓库主题去重"}, ensure_ascii=False))
+        print(json.dumps({
+            "gate_version": GATE_VERSION,
+            "rule": "同仓库主题去重（主体 + 需求模式）",
+            "limits": {
+                "max_per_repo": DEFAULT_MAX_PER_REPO,
+                "max_per_subject": DEFAULT_MAX_PER_SUBJECT,
+                "max_mode_ratio": DEFAULT_MAX_MODE_RATIO,
+                "max_ngram_ratio": DEFAULT_MAX_NGRAM_RATIO,
+                "max_new_capability_ratio": DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+            },
+            "min_candidate_recall": DEFAULT_MIN_CANDIDATE_RECALL,
+        }, ensure_ascii=False))
         return
 
     parent: Path | None = None
@@ -623,9 +1087,30 @@ def main() -> None:
     if repo_path:
         base_ledger = merge_ledgers(base_ledger, load_ledger(repo_ledger_path(repo_path)))
     derived = derive_repo_modules(repo_path) if repo_path else {}
+    # 判词回归：判据不能只靠「我觉得更严了」，必须拿真实判废对量一遍。
+    corpus_path: Path | None = None
+    if not args.no_calibration:
+        if args.judgement_corpus:
+            corpus_path = Path(args.judgement_corpus).expanduser().resolve()
+        elif DEFAULT_CORPUS_PATH.exists():
+            corpus_path = DEFAULT_CORPUS_PATH
+    judgement_corpus = None
+    if corpus_path and corpus_path.exists():
+        try:
+            judgement_corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            judgement_corpus = None
     result = check(
         items,
         max_per_module=args.max_per_module,
+        max_per_repo=args.max_per_repo,
+        max_per_subject=args.max_per_subject,
+        max_mode_ratio=args.max_mode_ratio,
+        max_ngram_ratio=args.max_ngram_ratio,
+        max_new_capability_ratio=args.max_new_capability_ratio,
+        review_neighbors=args.review_neighbors,
+        judgement_corpus=judgement_corpus,
+        min_candidate_recall=(None if args.no_calibration else args.min_candidate_recall),
         base_ledger=base_ledger,
         derived=derived,
         repair_labels=repair_labels,
@@ -635,19 +1120,23 @@ def main() -> None:
         max_unknown=args.max_unknown,
     )
     result["gate_version"] = GATE_VERSION
+    if corpus_path:
+        result["judgement_corpus"] = str(corpus_path)
 
     if args.write_ledger and ledger_path:
         merged: dict[str, dict] = {}
         for entry in (base_ledger or {}).get("entries", []) or []:
             merged[str(entry.get("label"))] = entry
         for entry in result["items"]:
-            merged[str(entry["label"])] = entry
+            merged[str(entry["label"])] = ledger_entry(entry)
         ledger_path.write_text(
             json.dumps({
                 "gate_version": GATE_VERSION,
                 "rule": result["rule"],
-                "max_per_module": result["max_per_module"],
+                "limits": result.get("limits", {}),
                 "module_counts": result["module_counts"],
+                "subject_mode_counts": result.get("subject_mode_counts", {}),
+                "mode_counts": result.get("mode_counts", {}),
                 "entries": list(merged.values()),
             }, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

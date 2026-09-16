@@ -301,6 +301,8 @@ def run_write_gates(
     *,
     repo: Path | None,
     max_per_module: int = 3,
+    judgement_corpus: dict | None = None,
+    min_candidate_recall: float | None = None,
 ) -> dict:
     """写表前的三道闸：同仓库主题去重、难度下限、提示词查重。
 
@@ -319,6 +321,13 @@ def run_write_gates(
         merge_ledgers,
         repo_ledger_path,
     )
+    from check_repo_theme import DEFAULT_CORPUS_PATH
+
+    if judgement_corpus is None and DEFAULT_CORPUS_PATH.exists():
+        try:
+            judgement_corpus = json.loads(DEFAULT_CORPUS_PATH.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            judgement_corpus = None
 
     items: list[tuple[str, str]] = []
     repair_labels: set[str] = set()
@@ -347,6 +356,8 @@ def run_write_gates(
     theme = theme_check(
         items,
         max_per_module=max_per_module,
+        judgement_corpus=judgement_corpus,
+        min_candidate_recall=min_candidate_recall,
         base_ledger=base_ledger,
         derived=derived,
         repair_labels=repair_labels,
@@ -367,7 +378,10 @@ def run_write_gates(
     problems: list[str] = []
     for violation in theme.get("violations", []) or []:
         kind = violation.get("kind")
-        detail = violation.get("feature_point") or violation.get("module") or violation.get("labels") or ""
+        detail = (
+            violation.get("subject_mode") or violation.get("subject") or violation.get("mode")
+            or violation.get("labels") or ""
+        )
         problems.append(f"主题去重未通过：{kind} {detail}".strip())
     for violation in difficulty.get("violations", []) or []:
         problems.append(f"难度下限未通过：{violation.get('label')} {'；'.join(violation.get('reasons') or [])}")
@@ -383,8 +397,17 @@ def run_write_gates(
         "theme": {
             "ok": theme.get("ok"),
             "module_counts": theme.get("module_counts"),
+            "mode_counts": theme.get("mode_counts"),
+            "subject_mode_counts": theme.get("subject_mode_counts"),
+            "task_type_counts": theme.get("task_type_counts"),
+            "new_capability_ratio": theme.get("new_capability_ratio"),
+            "calibration": theme.get("calibration"),
+            "limits": theme.get("limits"),
             "violations": theme.get("violations"),
             "candidate_pairs": (theme.get("candidate_pairs") or [])[:20],
+            "candidate_pair_count": theme.get("candidate_pair_count"),
+            "review_required_labels": theme.get("review_required_labels"),
+            "review_list": (theme.get("review_list") or [])[:60],
             "unknown_labels": theme.get("unknown_labels"),
         },
         "difficulty": {"ok": difficulty.get("ok"), "violations": difficulty.get("violations"),
@@ -410,6 +433,13 @@ def write_generation_manifest(
         "gate_version": gate.get("gate_version"),
         "gate_ok": gate.get("ok"),
         "module_counts": (gate.get("theme") or {}).get("module_counts"),
+        "subject_mode_counts": (gate.get("theme") or {}).get("subject_mode_counts"),
+        "mode_counts": (gate.get("theme") or {}).get("mode_counts"),
+        "task_type_counts": (gate.get("theme") or {}).get("task_type_counts"),
+        "new_capability_ratio": (gate.get("theme") or {}).get("new_capability_ratio"),
+        "limits": (gate.get("theme") or {}).get("limits"),
+        "calibration": (gate.get("theme") or {}).get("calibration"),
+        "review_required_labels": (gate.get("theme") or {}).get("review_required_labels"),
         "violations": gate.get("problems") or [],
         "skill": skill,
     }
@@ -541,7 +571,8 @@ def update(
                 "theme": gate.get("theme"),
                 "difficulty": gate.get("difficulty"),
                 "dedup": gate.get("dedup"),
-                "hint": "先按上面的违规项换模块 / 换能力点 / 换角度重写；"
+                "hint": "先按上面的违规项换主体 / 换需求模式 / 调类型配比重写；"
+                        "review_required_labels 里的每条题都要写出与最近邻的差异，写不出就换题。"
                         "确实要先落表再加 --allow-gate-failure，但被平台判废弃的记录不可返修",
             }, ensure_ascii=False, indent=2))
             raise SystemExit(1)
@@ -559,6 +590,11 @@ def update(
             "gate_version": gate.get("gate_version"),
             "problems": gate.get("problems"),
             "module_counts": (gate.get("theme") or {}).get("module_counts"),
+            "mode_counts": (gate.get("theme") or {}).get("mode_counts"),
+            "subject_mode_counts": (gate.get("theme") or {}).get("subject_mode_counts"),
+            "new_capability_ratio": (gate.get("theme") or {}).get("new_capability_ratio"),
+            "candidate_pair_count": (gate.get("theme") or {}).get("candidate_pair_count"),
+            "review_required_labels": (gate.get("theme") or {}).get("review_required_labels"),
             "candidate_pairs": (gate.get("theme") or {}).get("candidate_pairs"),
             "needs_review": (gate.get("difficulty") or {}).get("needs_review"),
         }
