@@ -166,7 +166,48 @@ REPO_SOURCE_PATTERNS = (
     "src/**/*.ts",
     "src/**/*.tsx",
     "app/**/*.py",
+    # 2026-09-17 补：Java + 静态多页前端（Spring Boot + *.html 这类仓库）。
+    # 原来的模式只覆盖 TS / Vue / JSX / Python，遇到 *.java + *.html 的仓库会派生出 0 个主体，
+    # 容量被算成 0，之后「主体识别为空」的硬拦会让整批题一条都写不进去。
+    "**/src/main/java/**/*.java",
+    "backend/**/*.java",
+    "frontend*/**/*.html",
+    "**/static/**/*.html",
+    # 2026-09-19 补：子目录式前端（cc-01642 那类 `frontend-portal/src/...`）。
+    # 原来的模式只认 `frontend/src/**` 和仓库根的 `src/**`，遇到带前缀的 app 目录
+    # （frontend-portal / frontend-admin / web-portal…）整个 src 树都扫不到：
+    # cc-01642 实测只命中 index.html 一个文件，主体数被算成 1，容量压到 2 条，
+    # 而仓库实际有 25 个源码文件。
+    "frontend*/src/**/*.vue",
+    "frontend*/src/**/*.ts",
+    "frontend*/src/**/*.tsx",
+    "web*/src/**/*.vue",
+    "web*/src/**/*.ts",
+    "web*/src/**/*.tsx",
 )
+
+# 用文件名看不出模块的入口文件：这类文件一律改用父目录名当主体
+# （views/news/index.vue → news）。不改的话六个 index.vue 会合并成一个巨大的
+# "index" 主体，所有题都命中它，同主体超额照样把容量压回 2 条。
+# 2026-09-19 补 `detail` 不入集合：详情页与同目录的列表页是两块独立可改区域，
+# 合并成一个主体会把「列表筛选口径」和「详情取值口径」两类题判成同主体，
+# 白占一格的同主体额度（cc-01642 实测：news 列表 + news 详情只能二选一）。
+PARENT_NAMED_STEMS = {"index", "main", "page", "list", "home"}
+GENERIC_DIR_NAMES = {
+    "src", "app", "pages", "views", "components", "common", "layout", "api",
+    "stores", "store", "styles", "types", "router", "utils", "composables",
+    "hooks", "assets", "modules", "features", "pages",
+}
+
+
+def _module_name(path: Path) -> str:
+    """主体名：普通文件用文件名，index/入口类文件用父目录名。"""
+    stem = path.stem
+    if stem in PARENT_NAMED_STEMS:
+        parent = path.parent.name
+        if parent and parent not in GENERIC_DIR_NAMES:
+            return parent
+    return stem
 
 
 def derive_repo_modules(repo: Path, *, min_tokens: int = 3) -> dict[str, set[str]]:
@@ -185,6 +226,11 @@ def derive_repo_modules(repo: Path, *, min_tokens: int = 3) -> dict[str, set[str
         for path in sorted(root.glob(pattern)):
             if path.name.endswith(".d.ts") or path.name in {"main.ts", "main.tsx", "index.ts", "index.tsx"}:
                 continue
+            # 构建产物与依赖目录不能当主体：`frontend*/**/*.html` 会顺手命中 dist 里的
+            # index.html，凭空多出一个 `dist` 主体，让建仓口径（源目录）与出题口径（克隆）
+            # 派生出不同的主体数（2026-09-19 cc-01642 实测）。
+            if any(part in IGNORED_SOURCE_DIR_PARTS for part in path.parts):
+                continue
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
@@ -200,8 +246,71 @@ def derive_repo_modules(repo: Path, *, min_tokens: int = 3) -> dict[str, set[str
                         fragments.add(piece)
             tokens |= fragments
             if len(tokens) >= min_tokens:
-                modules.setdefault(path.stem, set()).update(tokens)
+                modules.setdefault(_module_name(path), set()).update(tokens)
     return modules
+
+
+DEFAULT_MIN_SOURCE_FILES = 8
+
+# 自检用的宽口径源码后缀：不看扫描模式命中了多少，只看仓库里实际有多少源码文件，
+# 否则「模式漏掉整个目录」时文件数也跟着变小，自检等于没开。
+WIDE_SOURCE_SUFFIXES = {".vue", ".ts", ".tsx", ".jsx", ".js", ".java", ".py", ".go", ".rb", ".php", ".kt"}
+IGNORED_SOURCE_DIR_PARTS = {
+    "node_modules", "dist", "build", "out", ".git", "vendor", ".next", "coverage",
+    "__pycache__", ".venv", "venv", "target", ".gradle", ".tox",
+}
+
+
+def _source_files(root: Path) -> set[Path]:
+    found: set[Path] = set()
+    for path in root.rglob("*"):
+        if not path.is_file() or path.suffix not in WIDE_SOURCE_SUFFIXES:
+            continue
+        if path.name.endswith(".d.ts"):
+            continue
+        if any(part in IGNORED_SOURCE_DIR_PARTS for part in path.parts):
+            continue
+        found.add(path)
+    return found
+
+
+def derivation_health(repo: Path, derived: dict[str, set[str]] | None = None) -> dict[str, object]:
+    """主体派生健康度自检：源码文件多、派生主体却很少时显式报警。
+
+    2026-09-19 实测（cc-01642）：扫描模式不覆盖 `frontend-portal/src/**` 这类带前缀的
+    app 目录，25 个源码文件只派生出一个主体（来自 index.html），容量被算成 2 条，
+    一直到出题阶段才被发现。容量直接由主体数决定，所以这类「文件多、主体少」必须先
+    核对扫描模式，不能默默按这个容量建仓。
+    """
+    root = Path(repo)
+    if not root.is_dir():
+        return {}
+    files = _source_files(root)
+    matched: set[Path] = set()
+    for pattern in REPO_SOURCE_PATTERNS:
+        for path in root.glob(pattern):
+            if path.name.endswith(".d.ts"):
+                continue
+            if any(part in IGNORED_SOURCE_DIR_PARTS for part in path.parts):
+                continue
+            matched.add(path)
+    modules = derived if derived is not None else derive_repo_modules(root)
+    subjects = len(modules)
+    warning = ""
+    if len(files) >= DEFAULT_MIN_SOURCE_FILES and subjects <= 2:
+        names = "/".join(sorted(modules)) or "无"
+        warning = (
+            f"主体派生可疑：仓库里实际有 {len(files)} 个源码文件（扫描模式只命中 {len(matched)} 个），"
+            f"却只派生出 {subjects} 个主体（{names}）。容量由主体数决定，先核对 REPO_SOURCE_PATTERNS "
+            "是否覆盖这个仓库的目录布局，确认过再建仓，不要直接按这个容量出题。"
+        )
+    return {
+        "source_files": len(files),
+        "matched_files": len(matched),
+        "subjects": subjects,
+        "subject_names": sorted(modules)[:20],
+        "warning": warning,
+    }
 
 
 def detect_derived_module(text: str, derived: dict[str, set[str]], *, min_hits: int = 2) -> tuple[str, int]:
