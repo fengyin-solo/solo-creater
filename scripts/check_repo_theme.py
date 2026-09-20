@@ -184,6 +184,41 @@ REPO_SOURCE_PATTERNS = (
     "web*/src/**/*.vue",
     "web*/src/**/*.ts",
     "web*/src/**/*.tsx",
+    # 2026-09-20 补：C++ / Qt 仓库（`frontend-gui/src/*.cpp` + `include/*.h` 这类布局）。
+    # 原来的模式只覆盖 TS / Vue / JSX / Java / Python，遇到 C++ 仓库一个文件都命中不了：
+    # cc-01698 实测（5 个 .cpp + 4 个 .h）主体数被算成 0，容量 0，整批题一条都建不出来。
+    # 这里只加源码目录下的 .cpp / .cc / .h / .hpp，外加子目录式前端里的 .py 服务入口。
+    "**/src/**/*.cpp",
+    "**/src/**/*.cc",
+    "**/include/**/*.h",
+    "**/include/**/*.hpp",
+    "frontend*/**/*.py",
+    "web*/**/*.py",
+    # 2026-09-20 补：原生 JS 静态多页前端（`frontend-admin/*.html` + `frontend-admin/js/**/*.js`）。
+    # 原来的模式只命中 html 页面，js 目录下的页面控制器 / 数据层 / 应用框架一个都扫不到：
+    # cc-01709 实测 6 个 html 命中、8 个 .js 全部漏掉，主体数被算成 6、容量压到 12 条，
+    # 而仓库实际有 14 个可独立出题的代码位置。这里只补带前缀 app 目录下的 js 源码。
+    "frontend*/js/**/*.js",
+    "web*/js/**/*.js",
+    "frontend*/src/**/*.js",
+    "web*/src/**/*.js",
+    # 2026-09-20 补：原生静态前端的样式层与 app 目录下的运行配置
+    # （`frontend-user/css/*.css` + `frontend-user/Dockerfile` + `frontend-user/nginx.conf`）。
+    # 原来的模式只认 html 与 js，CSS、镜像定义、网关配置一个都扫不到：
+    # cc-01717（index.html + js/app.js + css/style.css）主体数被算成 2、容量 4；
+    # cc-01720（index.html + 5 个 js + 4 个 css）主体数被算成 6、容量 12，
+    # 补上这一层后分别是 5 个主体（容量 10）与 9 个主体（容量 18）。
+    # 这几类都是可独立出题的代码位置：样式层接外观 / 响应式题，镜像与网关层接工程化题，
+    # 不再是「一个 index.html 扛下整批题」。
+    "frontend*/**/*.css",
+    "web*/**/*.css",
+    "app*/**/*.css",
+    "frontend*/Dockerfile",
+    "web*/Dockerfile",
+    "app*/Dockerfile",
+    "frontend*/nginx.conf",
+    "web*/nginx.conf",
+    "app*/nginx.conf",
 )
 
 # 用文件名看不出模块的入口文件：这类文件一律改用父目录名当主体
@@ -254,7 +289,15 @@ DEFAULT_MIN_SOURCE_FILES = 8
 
 # 自检用的宽口径源码后缀：不看扫描模式命中了多少，只看仓库里实际有多少源码文件，
 # 否则「模式漏掉整个目录」时文件数也跟着变小，自检等于没开。
-WIDE_SOURCE_SUFFIXES = {".vue", ".ts", ".tsx", ".jsx", ".js", ".java", ".py", ".go", ".rb", ".php", ".kt"}
+WIDE_SOURCE_SUFFIXES = {
+    ".vue", ".ts", ".tsx", ".jsx", ".js", ".java", ".py", ".go", ".rb", ".php", ".kt",
+    # C++ / Qt 仓库的自检口径（2026-09-20）：不加这两类，C++ 项目在健康度自检里
+    # 连源码文件都数不出来，主体派生口径漏了整个目录也看不出来。
+    ".cpp", ".cc", ".h", ".hpp",
+    # 静态前端的样式层（2026-09-20，cc-01717 / cc-01720）：`.css` 现在也算主体，
+    # 自检口径要跟着走，否则「文件多、主体少」这类漏扫仍然看不出来。
+    ".css",
+}
 IGNORED_SOURCE_DIR_PARTS = {
     "node_modules", "dist", "build", "out", ".git", "vendor", ".next", "coverage",
     "__pycache__", ".venv", "venv", "target", ".gradle", ".tox",
