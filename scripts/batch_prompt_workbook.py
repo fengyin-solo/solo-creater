@@ -301,22 +301,38 @@ def run_write_gates(
     *,
     repo: Path | None,
     max_per_module: int = 3,
+    max_per_mode: int | None = None,
     judgement_corpus: dict | None = None,
     min_candidate_recall: float | None = None,
+    invented_subjects: dict[str, set[str]] | None = None,
+    invented_blacklist: set[str] | None = None,
+    invented_limit: int | None = None,
 ) -> dict:
     """写表前的三道闸：同仓库主题去重、难度下限、提示词查重。
 
     三道都跑在「这份工作簿加上本次要写的那条提示词」之后的整批内容上，
     任何一道不通过就返回 ok=False，由调用方决定拒写还是显式放行。
+
+    `max_per_mode` 不传时沿用 check_repo_theme 的默认口径（现在是 3）：需求模式词典 13 类，
+    x 2 是 26 个模式席位（一个仓库到不了 30 条），x 3 是 39 个。要按更严的口径复核某一批，
+    显式传 2 即可；这个参数只影响本次调用。
+
+    `invented_subjects` 是 0-1 代码生成的新主体登记（名字 -> 词表）：任务类型里的「代码生成」
+    就是 0-1 代码生成，允许它落在仓库里还不存在的模块上；登记后并入主体词表，
+    于是「新主体只配代码生成、每个新主体只坐一条、黑名单不许再用」都走同一套闸门。
     """
     from check_prompt_dedup import check as dedup_check
     from check_prompt_difficulty import JUSTIFICATION_PREFIX
     from check_prompt_difficulty import check as difficulty_check
     from check_repo_theme import (
+        DEFAULT_MAX_PER_MODE,
         GATE_VERSION,
         LEDGER_FILENAME,
         check as theme_check,
         derive_repo_modules,
+        invented_subject_from_note,
+        invented_subjects_from_ledger,
+        load_invented_blacklist,
         load_ledger,
         merge_ledgers,
         repo_ledger_path,
@@ -353,9 +369,25 @@ def run_write_gates(
         load_ledger(parent / LEDGER_FILENAME),
         load_ledger(repo_ledger_path(repo)) if repo else {},
     )
+    # 0-1 新主体：台账 + 本工作簿已有登记 + 本次新声明的，一并并进主体词表。
+    invented_registry: dict[str, set[str]] = {}
+    for source in (invented_subjects_from_ledger(base_ledger), invented_subjects or {}):
+        for name, words in source.items():
+            invented_registry.setdefault(name, set()).update(words)
+    for record in records:
+        parsed = invented_subject_from_note(str(record.get("备注") or ""))
+        if parsed:
+            name, words = parsed
+            invented_registry.setdefault(name, set()).update(words)
+    for name, words in invented_registry.items():
+        derived.setdefault(name, set()).update(words)
+    blacklist = (
+        load_invented_blacklist(parent) if invented_blacklist is None else invented_blacklist
+    )
     theme = theme_check(
         items,
         max_per_module=max_per_module,
+        max_per_mode=DEFAULT_MAX_PER_MODE if max_per_mode is None else max_per_mode,
         judgement_corpus=judgement_corpus,
         min_candidate_recall=min_candidate_recall,
         base_ledger=base_ledger,
@@ -365,6 +397,9 @@ def run_write_gates(
         require_ledger=True,
         ledger_present=(parent / LEDGER_FILENAME).exists(),
         max_unknown=0,
+        invented_subjects=invented_registry,
+        invented_blacklist=blacklist,
+        invented_limit=invented_limit,
     )
     defect_labels = {label for label, _ in items if "缺陷修复" in label or "Bug 修复" in label}
     difficulty = difficulty_check(
@@ -383,6 +418,33 @@ def run_write_gates(
             or violation.get("labels") or ""
         )
         problems.append(f"主题去重未通过：{kind} {detail}".strip())
+    # 声明了新主体的条目必须真的判回那个主体：题面若被通用兜底主体（数据导出与归档、地图与图层…）
+    # 抢走，登记就形同虚设，配额与查重都会落空，这里直接拒写。
+    theme_items = {
+        str(item.get("label")): item for item in (theme.get("items") or [])
+    }
+    invented_mismatch: list[dict[str, str]] = []
+    for record_row in records:
+        parsed_note = invented_subject_from_note(str(record_row.get("备注") or ""))
+        if not parsed_note:
+            continue
+        declared, _ = parsed_note
+        label = (
+            f"{record_row.get('子文件夹名称') or '未命名'}"
+            f"[{str(record_row.get('任务类型') or '').strip()}]"
+        )
+        item = theme_items.get(label)
+        if not item:
+            continue
+        actual = str(item.get("module") or "") or "未识别"
+        if actual != declared:
+            invented_mismatch.append({"label": label, "declared": declared, "actual": actual})
+    for mismatch in invented_mismatch:
+        problems.append(
+            f"新主体未落位：{mismatch['label']} 声明的新主体是「{mismatch['declared']}」，"
+            f"实际判成「{mismatch['actual']}」；把新主体的业务对象写进题面，"
+            "并避开通用兜底主体（数据导出与归档 / 地图与图层 / 报表统计…）的触发词"
+        )
     for violation in difficulty.get("violations", []) or []:
         problems.append(f"难度下限未通过：{violation.get('label')} {'；'.join(violation.get('reasons') or [])}")
     for violation in dedup.get("violations", []) or []:
@@ -492,10 +554,58 @@ def update(
     repo: Path | None = None,
     allow_gate_failure: bool = False,
     skip_version_check: bool = False,
+    max_per_mode: int | None = None,
+    invented_limit: int | None = None,
+    new_subject: str | None = None,
+    subject_words: str | None = None,
 ) -> dict:
     parsed = parse_folder_name(folder)
     if not parsed:
         raise SystemExit(f"Cannot parse folder name: {folder}")
+    # 0-1 新主体登记：任务类型里的「代码生成」就是 0-1 代码生成，允许它落在仓库里
+    # 还不存在的模块上；其余任务类型必须落回既有主体（见 skill 2.1 / 5.1）。
+    invented_subjects: dict[str, set[str]] = {}
+    declared_subject = ""
+    if new_subject or subject_words:
+        from check_repo_theme import (
+            INVENTED_SUBJECT_TYPE,
+            derive_repo_modules as _derive_repo_modules,
+            invented_note_for as _invented_note_for,
+        )
+
+        declared_subject = str(new_subject or "").strip()
+        words = {
+            part.strip()
+            for part in re.split(r"[,，、]", str(subject_words or ""))
+            if part.strip()
+        }
+        if not declared_subject:
+            raise SystemExit("--subject 与 --subject-words 必须成对传，且新主体名不能为空")
+        if len(words) < 2:
+            raise SystemExit("--subject-words 至少要给 2 个词，否则题面无法稳定落回这个新主体")
+        task_type = str(parsed.get("task_type") or "")
+        if task_type != INVENTED_SUBJECT_TYPE:
+            raise SystemExit(
+                f"新主体只能配「{INVENTED_SUBJECT_TYPE}」（0-1 代码生成）；"
+                f"{folder} 的任务类型是「{task_type}」，必须落回仓库里已有的主体"
+            )
+        existing_derived = _derive_repo_modules(repo) if repo else {}
+        for name in existing_derived:
+            if name == declared_subject or name in declared_subject or declared_subject in name:
+                raise SystemExit(
+                    f"新主体名「{declared_subject}」与仓库已有主体「{name}」重名或互相包含；"
+                    "0-1 新主体必须是一个跨域的、仓库里还没有的模块"
+                )
+        invented_subjects = {declared_subject: words}
+        prompt_text = str(prompt or "")
+        hits = sum(prompt_text.count(word) for word in words)
+        if hits < 2:
+            raise SystemExit(
+                f"新主体「{declared_subject}」的词表在题面里只出现 {hits} 次（至少要 2 次），"
+                "否则闸门判不回这个主体；把新主体的业务对象写清楚再提交"
+            )
+        extra_note = _invented_note_for(declared_subject, words)
+        note = f"{note}；{extra_note}".strip("；") if note else extra_note
     path = workbook_path(parent, workbook)
     records = read_workbook(path)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -560,7 +670,10 @@ def update(
                 f"{skill.get('behind')} 个提交（{skill.get('skill_root')}），先 git pull --ff-only 再出题；"
                 "确实要用当前版本就加 --skip-version-check"
             )
-        gate = run_write_gates(parent, records, repo=repo_path)
+        gate = run_write_gates(
+            parent, records, repo=repo_path, max_per_mode=max_per_mode,
+            invented_subjects=invented_subjects, invented_limit=invented_limit,
+        )
         gate["skill"] = skill
         if not gate["ok"] and not allow_gate_failure:
             print(json.dumps({
@@ -687,6 +800,21 @@ def main() -> None:
                         help="闸门不通过也强行写表（默认拒写；被平台判废弃的记录不可返修，慎用）")
     parser.add_argument("--skip-version-check", action="store_true",
                         help="跳过「skill 是否落后于远端」的检查")
+    parser.add_argument(
+        "--max-per-mode", type=int, default=None,
+        help="同一个需求模式在一批里最多出几条；不传沿用 check_repo_theme 的默认口径（3）。"
+             "需求模式词典 13 类，x 2 是 26 个模式席位（一个仓库到不了 30 条），x 3 是 39 个。")
+    parser.add_argument(
+        "--subject",
+        help="0-1 代码生成的新主体名（任务类型必须是「代码生成」）：题面落在一个仓库里还不存在的"
+             "模块上；每个新主体全批次只能坐一条，且必须与既有主体跨域")
+    parser.add_argument(
+        "--subject-words",
+        help="新主体的词表（英文逗号或顿号分隔，至少 2 个），用来把题面稳定判回这个新主体")
+    parser.add_argument(
+        "--invented-codegen-limit", type=int, default=None,
+        help="0-1 新主体的单批座位上限；与建仓、复检必须用同一个值，"
+             "不传用默认规则 min(5, ceil(既有主体数 / 2))")
     args = parser.parse_args()
 
     if args.command == "locate-project":
@@ -707,6 +835,10 @@ def main() -> None:
             repo=Path(args.repo).expanduser().resolve() if args.repo else None,
             allow_gate_failure=args.allow_gate_failure,
             skip_version_check=args.skip_version_check,
+            max_per_mode=args.max_per_mode,
+            invented_limit=args.invented_codegen_limit,
+            new_subject=args.subject,
+            subject_words=args.subject_words,
         )
     else:
         result = pick(parent, args.workbook, args.range, args.limit)

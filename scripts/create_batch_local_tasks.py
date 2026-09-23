@@ -118,17 +118,31 @@ TYPE_BY_SLUG = {
 
 def capacity_driven_counts(
     source: Path, overrides: dict[str, int | None], *, max_per_repo: int, max_per_subject: int,
+    max_per_mode: int | None = None,
+    invented_limit: int | None = None,
+    invented_auto: bool = False,
 ) -> tuple[dict[str, int], dict[str, object]]:
     """先算这个仓库能出多少条题，再决定建几个目录。
 
     2026-09-16 起批量建仓不再固定 46 条：平台是在同一个仓库里两两比对的，一个仓库能承载的
     题量 = min(单仓库上限, 主体数 × 每主体上限)。把想要的数量当成固定值，就会建出一批
     注定被判雷同的目录（实测 48/49 条的批次废弃 44%/35%）。
+
+    2026-09-23 起可再加一块「0-1 新主体座位」（默认关闭，GSB 批次用 invented_auto 打开）：
+    任务类型里的「代码生成」就是 0-1 代码生成，
+    它描述的是仓库里还不存在的模块，所以不占既有主体座位；上限默认
+    min(5, ceil(既有主体数 / 2))，并受「新增能力类 ≤ 50%」反推约束。
+
+    `max_per_mode` 不传时沿用 check_repo_theme 的默认口径（现在是 3）：需求模式词典 13 类，
+    x 2 只有 26 个模式席位（一个仓库出不到 30 条），x 3 是 39 个席位才够。
     """
     from check_repo_theme import compute_capacity, derive_repo_modules
 
     capacity = compute_capacity(
         derive_repo_modules(source), max_per_repo=max_per_repo, max_per_subject=max_per_subject,
+        **({} if max_per_mode is None else {"max_per_mode": max_per_mode}),
+        **({} if invented_limit is None else {"invented_limit": invented_limit}),
+        **({"invented_auto": invented_auto} if invented_auto else {}),
     )
     counts: dict[str, int] = {}
     for slug, task_type in TYPE_BY_SLUG.items():
@@ -240,6 +254,14 @@ def main() -> None:
                         help="单仓库条数上限，默认用 check_repo_theme 的 35")
     parser.add_argument("--max-per-subject", type=int, default=None,
                         help="同一主体条数上限，默认用 check_repo_theme 的 2")
+    parser.add_argument("--max-per-mode", type=int, default=None,
+                        help="同一需求模式条数上限，默认用 check_repo_theme 的 3；"
+                             "需求模式词典 13 类，x 2 是 26 个席位（一个仓库出不到 30 条），x 3 是 39 个才够")
+    parser.add_argument("--invented-codegen-limit", type=int, default=None,
+                        help="0-1 代码生成允许的新主体座位上限（只配代码生成、每个只坐一条）；"
+                             "不传且没有 --invented-auto 时是不开这类座位")
+    parser.add_argument("--invented-auto", action="store_true",
+                        help="打开 0-1 新主体座位并按其默认上限 min(5, ceil(既有主体数 / 2)) 算容量")
     parser.add_argument("--workbook", default=DEFAULT_WORKBOOK)
     parser.add_argument(
         "--exclude",
@@ -276,6 +298,9 @@ def main() -> None:
         overrides,
         max_per_repo=args.max_per_repo or DEFAULT_MAX_PER_REPO,
         max_per_subject=args.max_per_subject or DEFAULT_MAX_PER_SUBJECT,
+        max_per_mode=args.max_per_mode,
+        invented_limit=args.invented_codegen_limit,
+        invented_auto=args.invented_auto,
     )
     specs = [TaskSpec(slug, TYPE_BY_SLUG[slug], counts[slug]) for slug in TYPE_BY_SLUG]
     tasks = planned_tasks(source_number, specs, args.name_style)

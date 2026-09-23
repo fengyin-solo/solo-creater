@@ -17,7 +17,7 @@
 
 这个脚本把上面那套口径做成三层预检（数字都是拿 38 条真实判废对回测出来的）：
 
-1. **硬拦**：台账缺失 / 主体识别为空 / 单仓库条数超 `--max-per-repo`（默认 35）/
+1. **硬拦**：台账缺失 / 主体识别为空 / 单仓库条数超 `--max-per-repo`（默认 50）/
    **同主体 + 同需求模式重复** / 同主体超 `--max-per-subject`（默认 2）/
    单模式占比超 `--max-mode-ratio`（默认 0.20）/ 整批句式片段超 `--max-ngram-ratio`
    （默认 0.20）/ 新增能力类占比超 `--max-new-capability-ratio`（默认 0.50）。
@@ -29,7 +29,11 @@
    判据改动过不了这道门就不许写表。
 
 单仓库条数上限的意义：平台是在同一个仓库里两两比的，铺得越多最近邻越近。历史两批
-48/49 条在一个仓库里，废弃 44%/35%；上限压到 35 条并配上面三层，才有机会进个位数。
+48/49 条在一个仓库里，废弃 44%/35%；上限先压到 35 条并配上面三层。
+2026-09-23 按用户决定统一放宽到 **50 条**：主体多、模式铺得开的复杂仓库允许更大产能；
+风险靠主体轴（每主体 2 条且跨家族）、模式轴（每模式 3 条）与上面三层判据兜底。
+注意模式轴是 13 类 × 每模式上限（默认 3）= 39 个席位——**真正要出到 50 条，
+每模式上限还得抬到 4（13 × 4 = 52）**，否则模式轴会先卡住。
 
 用法：
 
@@ -66,8 +70,10 @@ CAPACITY_FILENAME = "repo-capacity.json"
 MANIFEST_FILENAME = "prompt-generation-manifest.json"
 DEFAULT_MAX_PER_MODULE = 3
 # 单仓库条数上限：平台是在同一个仓库里两两比，铺得越多最近邻越近。
-# 2026-09-16 复盘两个历史批次（48/49 条同仓库，废弃 44%/35%）后定的护栏。
-DEFAULT_MAX_PER_REPO = 35
+# 2026-09-16 复盘两个历史批次（48/49 条同仓库，废弃 44%/35%）后定 35；
+# 2026-09-23 按用户决定统一放宽到 50——特别复杂的仓库（主体多、模式铺得开）允许更大产能。
+# 想零风险可以显式传 `--max-per-repo 35` 收回旧口径。
+DEFAULT_MAX_PER_REPO = 50
 # 同一个主体最多出几条。2026-09-16 复标定：**默认 2 条，但两条必须跨任务家族**。
 #
 # 过程：cc-9900003 那批 20 条按「每主体 2 条、不限家族」生成，闸门判 ok 而人工复核读出 5 对中高风险
@@ -80,17 +86,26 @@ DEFAULT_MAX_PER_REPO = 35
 # 所以放开到每主体 2 条时，硬性要求两条来自不同任务家族；同家族的第二条一律拦下。
 # 另外：同主体同对象（对象实词重合）默认只当复核信号、不硬拦（见 DEFAULT_MIN_SHARED_OBJECT_WORDS），句式指纹仍然硬拦。
 # 想要零风险就显式收回到 1 条/主体 + 1 条/模式（`--max-per-subject 1 --max-per-mode 1`）。
-DEFAULT_MAX_PER_SUBJECT = 2
-# 同一个需求模式最多出几条，默认 **2 条**（配合每主体 2 条）。这条是硬拦，不是比例护栏。
+# 默认仍是 2（同主体两条必须跨家族）。超容量出题需要用户明确同意时才放宽：
+# 用环境变量 SOLO_CREATE_MAX_PER_SUBJECT 显式覆盖，不改默认行为，写入闸门照旧跑其余判据。
+DEFAULT_MAX_PER_SUBJECT = int(os.environ.get("SOLO_CREATE_MAX_PER_SUBJECT", "2"))
+# 同一个需求模式最多出几条，默认 **3 条**（配合每主体 2 条）。这条是硬拦，不是比例护栏。
 #
 # 2026-09-16 按 38 对真实判废对做集合运算：判废对里 22 对同主体、15 对跨主体但同模式，
 # 只剩 1 对两者都不沾。按当年的批次（49 条塞进 9 个模块）算，同模式对是最小的一类风险
 # （1.1%/对）；放开到每模式 2 条，一批 22 条也只有 9 对同模式对，预期废弃约 0.1 条。
 #
+# 2026-09-22 由 2 放到 3：需求模式词典 13 类（容量按词典条数算，不扣「代码理解」——
+# 被禁用的是任务类型，模式格子还在用），13 × 2 = 26 个模式席位——**不管仓库做多大都出不到
+# 30 条**；13 × 3 = 39 个席位才够。
+# 代价有界：判废召回是按「对级特征」（同主体 / 同需求模式有交集）算的，与这个上限无关；
+# 把历史两批（cc-6600009 48 条、cc-6600011 49 条）按 3 重跑仍然被判不通过，对级召回一点没掉。
+# 同模式对从 12 对涨到最多 36 对，按 1.1%/对估算预期多废弃约 0.2 条。
+#
 # 产能 = min(单仓库上限, 主体数 × 每主体上限, 模式数 × 每模式上限)：
-# 默认 2/2 时，cc-9900003 那种 11 个主体、13 类模式的仓库是 min(35, 22, 26) = 22 条；
-# 收到 1/1 就是 11 条（零风险口径）。
-DEFAULT_MAX_PER_MODE = 2
+# 现在默认 2/3 时，cc-9900003 那种 11 个主体、13 类模式的仓库是 min(50, 22, 39) = 22 条（主体卡住）；
+# 收到 1/1 就是 11 条（零风险口径）；主体够时 3 能把上限抬到模式轴 39（要到 50 得每模式 >= 4）。
+DEFAULT_MAX_PER_MODE = 3
 # 任务家族：同主体两条必须跨家族。依据是判废对里跨「新增能力类 ↔ 缺陷修复」的组合 0/38。
 TASK_FAMILY = {
     "代码生成": "新增能力",
@@ -113,6 +128,19 @@ NGRAM_SIZE = 6
 # 缺陷修复 14%–29%，重构/理解/工程化 0%。把配比压下来比改措辞有用得多。
 DEFAULT_MAX_NEW_CAPABILITY_RATIO = 0.50
 NEW_CAPABILITY_TYPES = {"代码生成", "功能迭代"}
+# 0-1 新主体座位（2026-09-23 起）：任务类型里的「代码生成」就是 0-1 代码生成——
+# 题面描述的是仓库里还不存在的模块，所以它不占既有主体的座位，但必须单独限流：
+#   1) 单批上限默认 min(5, ceil(既有主体数 / 2))；
+#   2) 只能配「代码生成」，其余任务类型必须落回既有主体；
+#   3) 一个新主体全批次（含历史台账）只能坐一条题；
+#   4) 新主体名进台账与黑名单，后续批次不得重复使用。
+# 依据：0-1 代码生成实测废弃率 59%（比功能迭代还高），判废原因是新主体之间同域，
+# 不是「模块不存在」，所以扩容必须配跨域要求与限流（见 skill 2.1 / 5.1）。
+DEFAULT_INVENTED_CODEGEN_LIMIT = 5
+INVENTED_SUBJECT_SOURCE = "invented"
+INVENTED_SUBJECT_TYPE = "代码生成"
+INVENTED_NOTE_TAG = "主体来源: 新增(0-1)"
+INVENTED_BLACKLIST_FILENAME = "repo-invented-blacklist.json"
 # 最近邻复核清单每条题列几个邻居
 DEFAULT_REVIEW_NEIGHBORS = 3
 # 同主体两条题的业务对象实词最多能重合几个。**默认 0 = 不硬拦，只当复核信号。**
@@ -731,11 +759,19 @@ def compute_capacity(
     max_per_subject: int = DEFAULT_MAX_PER_SUBJECT,
     max_per_mode: int = DEFAULT_MAX_PER_MODE,
     max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
+    invented_limit: int | None = None,
+    invented_auto: bool = False,
 ) -> dict[str, object]:
     """这个仓库最多能出多少条题：按「主体 × 需求模式」的座位数算，不按想要多少条算。
 
-    座位数 = min(主体数 × 每主体上限，需求模式数 × 每模式上限，单仓库上限)
-    ——三个上限默认分别是每主体 2 条、每模式 2 条、单仓库 35 条（方案 B）。
+    座位数 = min(单仓库上限，既有主体座位 + 0-1 新主体座位，需求模式数 × 每模式上限)
+    ——每主体默认 2 条（两条必须跨家族）、每模式默认 3 条、单仓库 50 条
+    （模式轴是 13 × 3 = 39，所以想真正出到 50 还要把每模式上限抬到 4）。
+    0-1 新主体座位默认**不开**（`invented_limit=None` 且 `invented_auto=False` 时是 0），
+    只有 GSB 批次这类明确要扩主体的流程才显式打开；打开后只给「代码生成」用
+    （它就是 0-1 代码生成），且受两重限制：
+    单批限流 min(5, ceil(既有主体数 / 2))，以及「新增能力类 ≤ 50%」反推的上限
+    （造 N 条新主体，就得有同样多的缺陷修复/重构/工程化兜住配比）。
     为什么按主体数：平台判的是「主体 + 需求模式」，实测判废对里同主体对占 71%–76%。
     同一个主体给第二条的依据是任务家族：判废对里同家族同主体被判废的有 38 对里的绝大部分，
     而「新增能力类 ↔ 缺陷修复」跨家族组合 0/38，所以第二条必须跨家族（见 DEFAULT_MAX_PER_SUBJECT 的注释）。
@@ -746,11 +782,26 @@ def compute_capacity(
     subjects = sorted((derived or {}).keys())
     subject_slots = len(subjects) * max_per_subject
     mode_slots = len(DEMAND_MODE_LEXICON) * max_per_mode
-    capacity = min(max_per_repo, subject_slots, mode_slots)
+    base_capacity = min(max_per_repo, subject_slots, mode_slots)
+    base_mix = suggest_type_mix(base_capacity, max_new_capability_ratio=max_new_capability_ratio)
+    invented_ratio_bound = max(
+        0,
+        sum(base_mix.get(name, 0) for name in ("缺陷修复", "代码重构", "代码理解", "工程化"))
+        - base_mix.get("功能迭代", 0),
+    )
+    if invented_limit is not None:
+        invented_ceiling = max(0, int(invented_limit))
+    elif invented_auto:
+        invented_ceiling = invented_limit_for(len(subjects), None)
+    else:
+        invented_ceiling = 0
+    invented_slots = min(invented_ceiling, invented_ratio_bound)
+    subject_total_slots = subject_slots + invented_slots
+    capacity = min(max_per_repo, subject_total_slots, mode_slots)
     binding = "repo"
-    if subject_slots <= min(max_per_repo, mode_slots):
+    if subject_total_slots <= min(max_per_repo, mode_slots):
         binding = "subject"
-    elif mode_slots <= min(max_per_repo, subject_slots):
+    elif mode_slots <= min(max_per_repo, subject_total_slots):
         binding = "mode"
     # 阈值按这个项目的历史仓库标定：常见仓库 8–13 个主体，1 条/主体 就是它们的正常产能，
     # 所以「小于 8」才需要换仓库，不要因为容量只有 10 出头就劝用户换。
@@ -766,6 +817,11 @@ def compute_capacity(
         "subject_count": len(subjects),
         "subjects": subjects,
         "subject_slots": subject_slots,
+        "existing_slots": subject_slots,
+        "invented_slots": invented_slots,
+        "invented_ceiling": invented_ceiling,
+        "invented_ratio_bound": invented_ratio_bound,
+        "subject_total_slots": subject_total_slots,
         "mode_slots": mode_slots,
         "max_per_repo": max_per_repo,
         "max_per_subject": max_per_subject,
@@ -773,8 +829,10 @@ def compute_capacity(
         "type_mix": suggest_type_mix(capacity, max_new_capability_ratio=max_new_capability_ratio),
         "new_capability_ratio_limit": max_new_capability_ratio,
         "verdict": verdict,
-        "rule": "容量 = min(单仓库上限, 主体数 × 每主体上限, 需求模式数 × 每模式上限)；"
-                "主体与需求模式在整批里各自唯一",
+        "rule": "容量 = min(单仓库上限, 既有主体数 × 每主体上限 + 0-1 新主体座位, "
+                "需求模式数 × 每模式上限)；新主体只配代码生成且每个只坐一条",
+        "invented_rule": "0-1 新主体座位 = min(单批上限 min(5, ceil(既有主体数 / 2)), "
+                         "新增能力类 ≤ 50% 反推上限)",
     }
 
 
@@ -878,6 +936,9 @@ def check(
     ledger_present: bool = True,
     max_unknown: int = 0,
     max_unknown_modes: int = 0,
+    invented_subjects: dict[str, set[str]] | None = None,
+    invented_blacklist: set[str] | None = None,
+    invented_limit: int | None = None,
 ) -> dict[str, object]:
     repair_labels = repair_labels or set()
     exempt_labels = exempt_labels or set()
@@ -887,6 +948,19 @@ def check(
                  exempt=label in exempt_labels)
         for label, text in items
     ]
+    # 0-1 新主体：仓库里还没有的模块，题面按生成方登记的新主体词表落位；
+    # 落位之后就走和既有主体完全相同的配额判据（同主体超额 / 同主体同家族 / 主体模式唯一）。
+    invented_map = {
+        str(name).strip(): {str(word).strip() for word in words if str(word).strip()}
+        for name, words in (invented_subjects or {}).items()
+        if str(name).strip()
+    }
+    invented_blacklist = {str(name).strip() for name in (invented_blacklist or set()) if str(name).strip()}
+    for record in records:
+        module = str(record.get("module") or "")
+        if module and module in invented_map:
+            record["subject_source"] = INVENTED_SUBJECT_SOURCE
+            record["subject_keywords"] = sorted(invented_map[module])
     # 题面正文只在内存里用于算相似度，不写进台账（台账只留主体、模式与句式指纹）。
     for record, (_, text) in zip(records, items):
         record["_text"] = text
@@ -992,6 +1066,74 @@ def check(
             "labels": unknown_modes[:8],
             "why": "业务能力落不到任何一个需求模式上：识别不出来就没法保证它不与别的题同模式，"
                    "等于绕过「同模式重复」这道硬拦。改题面把它挂到某个具体能力上再出。",
+        })
+    # 0-1 新主体的三条专属判据（2026-09-23）：只配代码生成、一个新主体只坐一条、黑名单不许再用。
+    # 依据：0-1 代码生成实测废弃 59%，判废原因是新主体之间同域；靠限流 + 台账登记把风险压住。
+    invented_used: Counter[str] = Counter()
+    invented_wrong_type: list[dict[str, object]] = []
+    for record in records:
+        module = str(record.get("module") or "")
+        if not module or module not in invented_map:
+            continue
+        invented_used[module] += 1
+        match = re.search(r"\[(.+?)\]$", str(record["label"]))
+        task_type = match.group(1) if match else ""
+        if task_type != INVENTED_SUBJECT_TYPE:
+            invented_wrong_type.append({
+                "subject": module, "label": record["label"], "task_type": task_type or "未知",
+            })
+    for entry in ledger_entries:
+        if str(entry.get("subject_source") or "") != INVENTED_SUBJECT_SOURCE:
+            continue
+        module = str(entry.get("module") or "")
+        if module:
+            invented_used[module] += 1
+    if invented_wrong_type:
+        violations.append({
+            "kind": "新主体错用",
+            "count": len(invented_wrong_type),
+            "items": invented_wrong_type[:8],
+            "why": f"0-1 新主体只能配「{INVENTED_SUBJECT_TYPE}」：其余任务类型必须落回既有主体"
+                   "（缺陷要有真实触发代码、迭代要扩已有功能、重构要有真实重构目标）。",
+        })
+    over_invented = sorted(
+        (name, count) for name, count in invented_used.items() if count > 1
+    )
+    if over_invented:
+        violations.append({
+            "kind": "新主体超额",
+            "count": len(over_invented),
+            "limit": 1,
+            "items": [{"subject": name, "count": count} for name, count in over_invented[:8]],
+            "why": "一个新主体全批次（含历史台账）只能坐一条题：仓库里没有这个模块，第二条既没有"
+                   "真实缺陷点也没有重构目标，平台上还会被判「同一个新模块的同类需求」重复。",
+        })
+    blacklisted_used = sorted(
+        {str(record["module"]) for record in records
+         if str(record.get("module") or "") in invented_blacklist}
+    )
+    if blacklisted_used:
+        violations.append({
+            "kind": "新主体黑名单",
+            "subjects": blacklisted_used[:8],
+            "why": f"这些新主体名在 {INVENTED_BLACKLIST_FILENAME} 里被拉黑（平台判废过），"
+                   "换一个跨域的新主体名，不要再复用。",
+        })
+    # 新主体座位总量也要守上限：既有主体数决定单批能造几个新主体（见 compute_capacity）。
+    existing_subject_count = len([
+        name for name in (derived or {}) if name not in invented_map
+    ])
+    invented_ceiling = invented_limit_for(existing_subject_count, invented_limit)
+    invented_total = sum(invented_used.values())
+    if invented_total > invented_ceiling:
+        violations.append({
+            "kind": "新主体座位超额",
+            "count": invented_total,
+            "limit": invented_ceiling,
+            "subjects": sorted(invented_used.keys())[:8],
+            "why": f"0-1 新主体单批最多 {invented_ceiling} 个（默认 min(5, ceil(既有主体数 / 2))，"
+                   "既有主体数 " + str(existing_subject_count) + "）：低于这个上限才属于"
+                   "「可控扩容」，再往上就回到 0-1 代码生成 59% 废弃率的老路。",
         })
     total = len(records) + len(ledger_entries)
     if total > max_per_repo:
@@ -1225,6 +1367,8 @@ def check(
         "new_capability_ratio": (round(new_capability / len(records), 3) if records else 0.0),
         "unknown_labels": unknown,
         "repo_modules": sorted((derived or {}).keys())[:40],
+        "invented_subjects": sorted(invented_map.keys()),
+        "invented_subject_counts": dict(sorted(invented_used.items())),
         "violations": violations,
         "candidate_pairs": candidates,
         "candidate_pair_count": len(candidates),
@@ -1296,6 +1440,89 @@ def merge_ledgers(*ledgers: dict | None) -> dict:
     return {"entries": list(merged.values())}
 
 
+def invented_limit_for(subject_count: int, limit: int | None = None) -> int:
+    """0-1 新主体的单批座位上限：min(默认上限, ceil(既有主体数 / 2))；没有主体就不给座位。"""
+    cap = DEFAULT_INVENTED_CODEGEN_LIMIT if limit is None else max(0, int(limit))
+    if subject_count <= 0:
+        return 0
+    return max(0, min(cap, (subject_count + 1) // 2))
+
+
+def invented_subjects_from_ledger(*ledgers: dict | None) -> dict[str, set[str]]:
+    """从台账恢复已登记的新主体（名字 -> 词表），供后续批次继续判主体与查重用。"""
+    found: dict[str, set[str]] = {}
+    for ledger in ledgers:
+        for entry in (ledger or {}).get("entries", []) or []:
+            if str(entry.get("subject_source") or "") != INVENTED_SUBJECT_SOURCE:
+                continue
+            name = str(entry.get("module") or "").strip()
+            if not name:
+                continue
+            words = {
+                str(word).strip()
+                for word in (entry.get("subject_keywords") or [])
+                if str(word).strip()
+            }
+            found.setdefault(name, set()).update(words)
+    return found
+
+
+def invented_subject_from_note(note: str) -> tuple[str, set[str]] | None:
+    """从工作簿备注恢复登记：`主体来源: 新增(0-1)；主体: X；主体词表: a,b`。"""
+    text = str(note or "")
+    if INVENTED_NOTE_TAG not in text:
+        return None
+    name_match = re.search(r"主体:\s*([^；;，,]+)", text)
+    words_match = re.search(r"主体词表:\s*([^；;]+)", text)
+    if not name_match:
+        return None
+    name = name_match.group(1).strip()
+    if not name:
+        return None
+    words = {
+        part.strip()
+        for part in re.split(r"[,，、]", words_match.group(1) if words_match else "")
+        if part.strip()
+    }
+    return name, words
+
+
+def invented_note_for(name: str, words: set[str] | list[str]) -> str:
+    """写进工作簿备注的新主体登记串（改判/复检都能读回来）。"""
+    return f"{INVENTED_NOTE_TAG}；主体: {name}；主体词表: {','.join(sorted(words))}"
+
+
+def load_invented_blacklist(parent: Path | None) -> set[str]:
+    """被判废过的新主体名拉黑：文件是父目录下的 repo-invented-blacklist.json。"""
+    if not parent:
+        return set()
+    path = Path(parent) / INVENTED_BLACKLIST_FILENAME
+    if not path.exists():
+        return set()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    names = payload.get("blacklist") if isinstance(payload, dict) else payload
+    return {str(name).strip() for name in (names or []) if str(name).strip()}
+
+
+def invented_subjects_from_workbook(parent: Path, workbook_name: str) -> dict[str, set[str]]:
+    """工作簿备注里的新主体登记：台账还没重写时也能认出本批已用过的新主体。"""
+    found: dict[str, set[str]] = {}
+    try:
+        records = workbook_lib.read_workbook(Path(parent) / workbook_name)
+    except Exception:  # noqa: BLE001 - 工作簿读不了就不追加登记，交给别的判据
+        return found
+    for record in records:
+        parsed = invented_subject_from_note(str(record.get("备注") or ""))
+        if not parsed:
+            continue
+        name, words = parsed
+        found.setdefault(name, set()).update(words)
+    return found
+
+
 def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | None = None) -> Path:
     path = repo_ledger_path(repo)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1320,6 +1547,8 @@ LEDGER_ENTRY_FIELDS = (
     "label", "module", "modules", "mode", "modes", "subject_mode", "capabilities",
     "skeletons", "feature_point", "capability_words", "object_words", "template_clauses",
     "repair_round", "module_exempt",
+    # 0-1 新主体的登记：来源与词表要跨批次留着，后续批次才能继续判主体、查配额与拉黑。
+    "subject_source", "subject_keywords",
 )
 
 
@@ -1471,6 +1700,13 @@ def main() -> None:
     parser.add_argument("--max-per-mode", type=int, default=DEFAULT_MAX_PER_MODE,
                         help=f"同一需求模式最多出几条，默认 {DEFAULT_MAX_PER_MODE}；"
                              "判废对里 15/38 是跨主体同模式，换主体躲不开，只能换模式")
+    parser.add_argument("--invented-codegen-limit", type=int, default=None,
+                        help="0-1 代码生成允许的新主体座位上限（只配代码生成、每个只坐一条）；"
+                             "不传且没有 --invented-auto 时是不开这类座位；"
+                             f"--invented-auto 用默认规则 min({DEFAULT_INVENTED_CODEGEN_LIMIT}, "
+                             "ceil(既有主体数 / 2))")
+    parser.add_argument("--invented-auto", action="store_true",
+                        help="打开 0-1 新主体座位并按默认上限算容量（GSB 批次的固定口径）")
     parser.add_argument("--max-mode-ratio", type=float, default=DEFAULT_MAX_MODE_RATIO,
                         help=f"单个需求模式占整批的比例上限，默认 {DEFAULT_MAX_MODE_RATIO}")
     parser.add_argument("--max-ngram-ratio", type=float, default=DEFAULT_MAX_NGRAM_RATIO,
@@ -1543,11 +1779,25 @@ def main() -> None:
     if repo_path:
         base_ledger = merge_ledgers(base_ledger, load_ledger(repo_ledger_path(repo_path)))
     derived = derive_repo_modules(repo_path) if repo_path else {}
+    # 0-1 新主体：从台账与工作簿备注恢复登记并进主体词表，让同一套配额判据一并覆盖新主体。
+    invented_registry: dict[str, set[str]] = {}
+    invented_sources = [invented_subjects_from_ledger(base_ledger)]
+    if parent:
+        invented_sources.append(invented_subjects_from_workbook(parent, args.workbook))
+    for source in invented_sources:
+        for name, words in source.items():
+            invented_registry.setdefault(name, set()).update(words)
+    invented_blacklist = load_invented_blacklist(parent)
+    for name, words in invented_registry.items():
+        derived.setdefault(name, set()).update(words)
     # 建仓前第一步：先算这个仓库能出几条题，再决定建几个目录、写几行 Excel。
     if args.capacity or args.capacity_file is not None:
         capacity = compute_capacity(
             derived, max_per_repo=args.max_per_repo, max_per_subject=args.max_per_subject,
+            max_per_mode=args.max_per_mode,
             max_new_capability_ratio=args.max_new_capability_ratio,
+            invented_limit=args.invented_codegen_limit,
+            invented_auto=args.invented_auto,
         )
         capacity["gate_version"] = GATE_VERSION
         if args.capacity_file is not None:
@@ -1596,6 +1846,9 @@ def main() -> None:
         ledger_present=bool(ledger_path and ledger_path.exists()),
         max_unknown=args.max_unknown,
         max_unknown_modes=args.max_unknown_modes,
+        invented_subjects=invented_registry,
+        invented_blacklist=invented_blacklist,
+        invented_limit=args.invented_codegen_limit,
     )
     result["gate_version"] = GATE_VERSION
     if corpus_path:

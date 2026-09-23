@@ -87,8 +87,9 @@ class RepoThemeTest(unittest.TestCase):
         derived = {"RecordingPanel": {"录制", "回看", "通道"}}
         items = [
             (f"{index}[代码生成]", f"新增录制回看能力第 {index} 种：按通道整理历史录制的第 {index} 个侧面。")
-            for index in range(1, 37)
+            for index in range(1, 52)
         ]
+        # 单仓库上限 2026-09-23 起是 50，所以要用 51 条才能单独触发「仓库超出容量」
         result = check(items, derived=derived, max_unknown=99)
         self.assertFalse(result["ok"])
         self.assertTrue(
@@ -254,7 +255,8 @@ class CapacityTest(unittest.TestCase):
     """建仓数量必须由容量决定，不能固定 46 条。
 
     2026-09-16 实测：把 48/49 条压在同一个仓库里，规则 C 废弃 44%/35%。
-    容量 = min(单仓库上限 35, 主体数 × 每主体上限 2, 需求模式数 × 每模式上限 2)，建目录数与 Excel 行数都按它来。
+    容量 = min(单仓库上限 50, 主体数 × 每主体上限 2, 需求模式数 13 × 每模式上限 3)，
+    建目录数与 Excel 行数都按它来（2026-09-23 起单仓库上限由 35 放宽到 50）。
     每主体放第二条的依据是任务家族：同家族同主体被判废的有 38 对里的绝大部分，
     而「新增能力类 ↔ 缺陷修复」跨家族组合 0/38，所以第二条必须跨家族。
     """
@@ -269,21 +271,34 @@ class CapacityTest(unittest.TestCase):
         self.assertEqual(capacity["binding_limit"], "subject")
         self.assertEqual(capacity["subject_count"], 11)
 
-    def test_capacity_is_mode_limited_by_default(self):
+    def test_capacity_defaults_to_three_per_mode(self):
         from check_repo_theme import DEMAND_MODE_LEXICON, compute_capacity
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
         capacity = compute_capacity(derived)
-        # 默认每模式 2 条，所以再大的仓库也只能出「模式数 × 2」条
+        # 2026-09-22 起默认每模式 3 条：模式席位 = 13 × 3 = 39；
+        # 单仓库上限 2026-09-23 放宽到 50 之后，主体够多时先卡在模式轴（39 < 50）
+        self.assertEqual(capacity["mode_slots"], len(DEMAND_MODE_LEXICON) * 3)
+        self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON) * 3)
+        self.assertEqual(capacity["binding_limit"], "mode")
+
+    def test_capacity_is_mode_limited_when_pinned_back_to_two(self):
+        from check_repo_theme import DEMAND_MODE_LEXICON, compute_capacity
+
+        derived = {f"Comp{index}": {"词"} for index in range(40)}
+        capacity = compute_capacity(derived, max_per_mode=2)
+        # 显式收回旧口径：再大的仓库也只能出「模式数 × 2」条
         self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON) * 2)
         self.assertEqual(capacity["binding_limit"], "mode")
 
-    def test_capacity_is_repo_limited_when_modes_reused(self):
-        from check_repo_theme import compute_capacity
+    def test_capacity_is_repo_limited_when_modes_are_wide_enough(self):
+        from check_repo_theme import DEMAND_MODE_LEXICON, compute_capacity
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
-        capacity = compute_capacity(derived, max_per_mode=3)
-        self.assertEqual(capacity["capacity"], 35)
+        capacity = compute_capacity(derived, max_per_mode=4)
+        # 模式席位 13 × 4 = 52 >= 50，主体也够多 → 这时才真正卡在单仓库上限 50
+        self.assertGreaterEqual(len(DEMAND_MODE_LEXICON) * 4, 50)
+        self.assertEqual(capacity["capacity"], 50)
         self.assertEqual(capacity["binding_limit"], "repo")
 
     def test_type_mix_respects_new_capability_ratio(self):
@@ -432,6 +447,92 @@ class CapacityTest(unittest.TestCase):
             "同主体同对象", {v["kind"] for v in strict_result["violations"]},
             "显式打开时对象轴要能拦下来",
         )
+
+
+class MaxPerModeTest(unittest.TestCase):
+    """写表闸门的每模式上限必须可透传：默认 3，显式传 2 才回到 24 条的旧口径。
+
+    背景：容量 = min(单仓库上限 50, 主体数 x 2, 需求模式数 13 x 每模式上限)。
+    需求模式词典 13 类，x 2 = 26 个模式席位 —— 不管仓库多大都到不了 30 条，
+    所以默认值在 2026-09-22 由 2 放到 3（13 x 3 = 39 个席位），显式传 2 可以收回旧口径。
+    """
+
+    MODE_KEYS = {
+        "新增展示视图": ("概览", "看板", "呈现"),
+        "规则与阈值": ("阈值", "口径", "上限"),
+        "状态流转": ("生命周期", "归档", "流转"),
+        "权限与归属": ("越权", "只读", "受控"),
+        "批量操作": ("批量", "多选", "整组"),
+        "导入导出": ("导入", "导出", "打包"),
+        "列表定位与筛选": ("翻页", "分页", "过滤"),
+        "持久化与一致性": ("刷新", "重新进入", "保留原"),
+        "边界与空态": ("空态", "暂无", "中断"),
+        "缺陷处置": ("残留", "错位", "丢失"),
+        "代码重构收拢": ("收拢", "抽取", "统一写法"),
+        "工程化与流程": ("流水线", "部署", "本地开发"),
+    }
+
+    def _records(self, total: int) -> list[dict[str, str]]:
+        from check_repo_theme import DEMAND_MODE_LEXICON
+
+        usable = [mode for mode in DEMAND_MODE_LEXICON if mode != "代码理解"]
+        rows = []
+        for index in range(total):
+            mode = usable[index % len(usable)]
+            first, second, third = self.MODE_KEYS[mode]
+            rows.append({
+                # 工程化属于豁免类型，这样每条题面不需要落回真实主体，
+                # 用例只考察「同模式重复」这一条闸门。
+                "子文件夹名称": f"6600011{index:02d}-engineering-{index}",
+                "任务类型": "工程化",
+                "提示词": (f"模块{index:02d}的{first}页面希望增加新的{second}入口，"
+                           f"{third}要按运维习惯说明清楚，第{index}条还要联动手册里的既有规则。"),
+                "提示词类型": "主提示词",
+                "备注": "",
+            })
+        return rows
+
+    def _mode_violations(self, total: int, **kwargs) -> list[dict]:
+        import os
+        import tempfile
+
+        from batch_prompt_workbook import run_write_gates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            os.environ["SOLO_CREATE_REPO_LEDGER_ROOT"] = str(parent / "repo-ledgers")
+            (parent / "repo-theme-ledger.json").write_text(
+                json.dumps({"gate_version": "test", "entries": []}), encoding="utf-8",
+            )
+            gate = run_write_gates(parent, self._records(total), repo=None, **kwargs)
+        return [item for item in (gate.get("theme", {}).get("violations") or [])
+                if item.get("kind") == "同模式重复"]
+
+    def test_default_limit_three_unlocks_thirty_plus(self):
+        """默认口径（不传 max_per_mode）是 3：30 条、36 条通过，第 37 条被同模式重复拦下。"""
+        self.assertFalse(self._mode_violations(30), "默认口径 3 下 30 条必须能写进工作簿")
+        self.assertFalse(self._mode_violations(36))
+        hits = self._mode_violations(37)
+        self.assertTrue(hits, "默认口径下第 37 条必须被拦下")
+        self.assertGreater(hits[0]["count"], 3)
+
+    def test_explicit_limit_two_restores_the_old_ceiling(self):
+        """显式传 2 可以收回旧口径：24 条通过，第 25 条被拦下。"""
+        self.assertFalse(self._mode_violations(24, max_per_mode=2))
+        hits = self._mode_violations(25, max_per_mode=2)
+        self.assertTrue(hits, "显式口径 2 下第 25 条必须被拦下")
+        self.assertGreater(hits[0]["count"], 2)
+
+    def test_default_matches_check_repo_theme_constant(self):
+        """默认值只有一处来源：check_repo_theme.DEFAULT_MAX_PER_MODE。"""
+        from check_repo_theme import DEMAND_MODE_LEXICON, DEFAULT_MAX_PER_MODE, compute_capacity
+
+        self.assertEqual(DEFAULT_MAX_PER_MODE, 3)
+        derived = {f"s{i}": {"词"} for i in range(29)}
+        capacity = compute_capacity(derived)
+        self.assertEqual(capacity["mode_slots"], len(DEMAND_MODE_LEXICON) * 3)
+        # 29 个主体 x 每主体 2 条 = 58，单仓库上限 50，模式席位 39 —— 卡在模式轴
+        self.assertEqual(capacity["capacity"], len(DEMAND_MODE_LEXICON) * 3)
 
 
 class DifficultyStructureTest(unittest.TestCase):

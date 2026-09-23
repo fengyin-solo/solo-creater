@@ -496,7 +496,9 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
   不要先写完几十条再去查重。
 - **硬约束（跨批次累计）**，2026-09-16 复标定后的口径（方案 B）：
   **同一主体 ≤ 2 条且两条必须跨任务家族**（`--max-per-subject` 默认 2）、
-  **同一需求模式 ≤ 2 条**（`--max-per-mode` 默认 2）、单仓库 ≤ `--max-per-repo`（默认 35）、
+  **同一需求模式 ≤ 3 条**（`--max-per-mode` 默认 3；2026-09-22 由 2 放开，因为需求模式词典
+  13 类，x 2 只有 26 个席位、一个仓库出不到 30 条）、单仓库 ≤ `--max-per-repo`（默认 50，
+  2026-09-23 由 35 放宽，给主体多、模式铺得开的复杂仓库更大产能）、
   单个 6 字句式片段占比 ≤ `--max-ngram-ratio`（默认 20%）、
   新增能力类占比 ≤ `--max-new-capability-ratio`（默认 50%）。
   任务家族只有三类：**新增能力**（代码生成 / 功能迭代）、**缺陷修复**（缺陷修复 / Bug 修复）、
@@ -508,7 +510,8 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
   - 所以放开第二条、但强制跨家族，是最划算的扩容：cc-9900003 那种 11 个主体的仓库
     产能从 11 条提到 **22 条**，预期废弃仍只有 0–1 条。
   - 产能 = `min(单仓库上限, 主体数 × 每主体上限, 模式数 × 每模式上限)`；
-    要零风险就显式收回到 `--max-per-subject 1 --max-per-mode 1`（那批就是 11 条）。
+    要零风险就显式收回到 `--max-per-subject 1 --max-per-mode 1`（那批就是 11 条）；
+    想要更保守的复核口径（一个仓库封顶 24 条）显式传 `--max-per-mode 2`。
 - **护栏有三道，对象轴只当复核信号**：
   - 硬拦：**同主体同家族**（同主体两条必须跨家族）、**同模式 >2**、**6 字句式片段 >20%**、新增能力类 >50%；
   - 复核信号：`review_list` 里的 `object_overlap`（同主体两条的对象词重合数）——
@@ -548,7 +551,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
   出题前先生成题位表：`check_repo_theme.py --parent "<父目录>" --repo "<origin>" --write-ledger --write-feature-points`
   会写出 `repo-feature-points.json`（主体词典 + 需求模式 + 已占用的「主体 × 模式」格子），
   按它分配题位再写题面。
-- 同一主体最多 2 条且两条必须跨任务家族、同一需求模式最多 2 条（硬约束，跨批次累计），单仓库不超过 35 条；
+- 同一主体最多 2 条且两条必须跨任务家族、同一需求模式最多 3 条（硬约束，跨批次累计），单仓库不超过 50 条；
   超了必须换主体、换模式或换仓库出。
   平台是拿先提交的那条当基准、后提交的判废弃，所以同仓库要一次性全局去重。
   提交侧配合分批（每批 ≤10 条）兜底：即使有漏网，损失也锁在一批里，不会一次废十几条。
@@ -687,7 +690,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 
 **建仓数量从 2026-09-16 起由容量决定，不再固定 46 条**：
 
-- 容量 = `min(单仓库上限 35, 主体数 × 每主体上限 2, 需求模式数 × 每模式上限 2)`。
+- 容量 = `min(单仓库上限 50, 既有主体数 × 每主体上限 2 + 0-1 新主体座位, 需求模式数 13 × 每模式上限 3)`。
   平台是在同一个仓库里两两比对的：判废对里 22/38 同主体、15/38 跨主体同模式，
   所以同一个主体的第二条必须跨任务家族、同一个需求模式最多两条（2026-09-16 方案 B）。
   多建出来的目录注定互相判雷同（实测 48/49 条的批次废弃 44%/35%）。
@@ -711,7 +714,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 确认已经唯一命中 `批量建仓路`。
 - 把父目录、源目录、source number、命名规则、容量结果等上下文收束后交给 `$solo-batch-repo-seed`。
 - 批量建仓时要求 `$solo-batch-repo-seed` 先算容量，再按容量的类型配比建目录；`代码生成` 与 `功能迭代` 仍按每批最多 5 个分块交替规划序号；两类主任务之后按 `缺陷修复`、`代码重构`、`代码理解`、`工程化` 的顺序排列。
-- 默认数量不再固定：总条数 = 容量（≤35），各类型条数 = `repo-capacity.json` 里的 `type_mix`；只有用户显式给出某类数量时才覆盖该类的默认值。
+- 默认数量不再固定：总条数 = 容量（≤50），各类型条数 = `repo-capacity.json` 里的 `type_mix`；只有用户显式给出某类数量时才覆盖该类的默认值。
 - 默认命名沿用 `<源项目编号><序号>-<任务类型标识>-<序号>`；只有用户明确要求短编号时才切到 `--name-style dash`。
 - 保留本文件 `2.4` 的 Hard Stop 优先级；如果源项目编号无法判定且用户没给 `--source-number`，先停，不要下发给子 skill。
 - 接收子 skill 返回的建仓结果摘要。
@@ -742,7 +745,7 @@ description: "为本地代码项目生成、投递并迭代单轮或批量协作
 - 难度不是标签：`地狱` 必须压住 2 到 3 个咬合能力点、至少 2 类非开心路径和 1 项跨状态一致性要求；`困难` 必须包含 2 个能力点、至少 1 类非开心路径和 1 项与既有功能的联动约束；具体口径以下沉后的 `$solo-batch-first-prompts` 为准。
 - `缺陷修复` 批量题必须先过平台「过于简单」拒收口径，按 `references/01_Bug修复任务执行手册.md` 的「难度下限」一节出题：至少两个咬合缺陷点，或一个共享根因在两个以上入口都能看到；不允许出「加一条校验再给一句提示」这类单点题。
 - 批量生成必须跑到难度下限检查 `ok: true` 才算成功：`python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_difficulty.py --parent "<父目录>"`（默认全部任务类型）。`缺陷修复` 命中两项及以上「过于简单」特征时必须换角度重出；`代码生成` / `功能迭代` 的命中项进 `needs_review`，要逐条复核并把依据写进工作簿 `备注`（以 `难度复核: ` 开头），不接受只加限定词，也不接受不看这份清单。
-- 批量生成必须跑到同仓库主题去重 `ok: true` 才算成功：`python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger`；**台账缺失、主体/需求模式识别为空、同主体超过 2 条、同模式超过 2 条、同主体同家族、单仓库超过 35 条、句式指纹或新增能力类占比超线都是硬拦**（同主体同对象默认只当复核信号，加 `--min-shared-object-words 2` 才升级为硬拦）（判据对 38 对真实判废对召回 97.4%），`review_required_labels` 要逐条写出与最近邻的差异。台账写在父目录的 `repo-theme-ledger.json`（含每条的主体、需求模式与句式指纹），后续批次继续在它上面比，做到同仓库全局去重。
+- 批量生成必须跑到同仓库主题去重 `ok: true` 才算成功：`python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger`；**台账缺失、主体/需求模式识别为空、同主体超过 2 条、同模式超过 3 条、同主体同家族、单仓库超过 50 条、句式指纹或新增能力类占比超线都是硬拦**（同主体同对象默认只当复核信号，加 `--min-shared-object-words 2` 才升级为硬拦）（判据对 38 对真实判废对召回 97.4%），`review_required_labels` 要逐条写出与最近邻的差异。台账写在父目录的 `repo-theme-ledger.json`（含每条的主体、需求模式与句式指纹），后续批次继续在它上面比，做到同仓库全局去重。
 - 同一批里**主体与需求模式各自只能出现一次**：这是硬约束，不是建议。撞了就换主体、换模式或换仓库，不要靠改措辞、换同义词、把模式标签改个说法来绕过。
 - 工作簿里的 `任务类型` 与验收侧口径要对上：出题侧沿用 `缺陷修复` 这个内部标签（目录名 `-bug-`、难度过滤都用它），验收侧 `TASK_TYPE_MAP` 负责把它映射成平台规范值 `Bug修复`。任何一侧新增或改名，必须同步另一侧的映射表与回归用例，否则整批会卡在提交组装阶段。
 - 批量生成必须跑到提示词重复检查 `ok: true` 才算成功：文字重复率、语义近似度都要 `<= 20%`，复合需求交叉重叠为 0 对；命中时必须换角度重出，不接受只改同义词。
@@ -1365,8 +1368,8 @@ https://github.com/owner/repo
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/record_prompt_history.py --project-path . --task-type "<任务类型>" --angle "<这次的切入点>" --difficulty "<地狱|困难>" --hidden-constraints "<隐藏约束中文描述；没有就传空>" --prompt "<最终提示词>"`
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_dedup.py --parent "<父目录>" --include-history`（提示词重复硬阈值检查：文字重复率、语义近似度 `<= 20%`，复合需求交叉重叠 0 对）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_prompt_difficulty.py --prompts-file "<临时文件>"`（难度下限检查：命中 2 项及以上「过于简单」特征即拒收；批量场景用 `--parent "<父目录>"`，**默认覆盖全部任务类型**；`缺陷修复` 硬拦，`代码生成` / `功能迭代` 的命中项进 `needs_review` 并逐条写依据）
-- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger --write-feature-points`（同仓库主题去重：台账缺失、主体/模式识别为空、同主体超过 2 条、同模式超过 2 条、同主体同家族、单仓库超过 35 条、句式指纹/新增能力类占比超线都硬拦；同主体同对象是复核信号、加 `--min-shared-object-words 2` 才硬拦；判据对 38 对判废对的召回 97.4%；同主体或需求模式有交集的进复核清单，并带 `review_list` 最近邻。判词回归默认加载 `tests/fixtures/rule-c-corpus.json`。台账 `repo-theme-ledger.json` 与题位表 `repo-feature-points.json` 落在父目录，同仓库台账落在 `~/.codex/repo-theme-ledgers/`，跨批次、跨父目录继续累计）
-- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --repo "<源目录>" --capacity --capacity-file`（建仓前第一步：算这个仓库能出多少条题 = `min(单仓库上限 35, 主体数 × 2, 需求模式数 × 2)`，给出建议类型配比，写 `repo-capacity.json`；建目录数与 Excel 行数都按它来）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --parent "<父目录>" --repo "<父目录>/<任意任务目录>/origin" --require-ledger --write-ledger --write-feature-points`（同仓库主题去重：台账缺失、主体/模式识别为空、同主体超过 2 条、同模式超过 3 条、同主体同家族、单仓库超过 50 条、句式指纹/新增能力类占比超线都硬拦；同主体同对象是复核信号、加 `--min-shared-object-words 2` 才硬拦；判据对 38 对判废对的召回 97.4%；同主体或需求模式有交集的进复核清单，并带 `review_list` 最近邻。判词回归默认加载 `tests/fixtures/rule-c-corpus.json`。台账 `repo-theme-ledger.json` 与题位表 `repo-feature-points.json` 落在父目录，同仓库台账落在 `~/.codex/repo-theme-ledgers/`，跨批次、跨父目录继续累计）
+- `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/check_repo_theme.py --repo "<源目录>" --capacity --capacity-file`（建仓前第一步：算这个仓库能出多少条题 = `min(单仓库上限 50, 既有主体数 × 每主体上限 + 0-1 新主体座位, 需求模式数 13 × 每模式上限)`，给出建议类型配比，写 `repo-capacity.json`；建目录数与 Excel 行数都按它来）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/create_batch_local_tasks.py --parent "<父目录>" --dry-run`（批量建仓：不传数量时按容量自动分配，计划数超过容量时返回 `capacity_warning`）
 - `python3 /Users/fengyin/.codex/skills/solo-creater/scripts/batch_prompt_workbook.py update --parent "<父目录>" --folder "<子文件夹名称>" --prompt "<最终提示词>"`（写提示词前自动跑上面三道闸，不通过拒写；通过后把闸门版本写进备注并落 `prompt-generation-manifest.json`）
 
