@@ -121,6 +121,7 @@ def capacity_driven_counts(
     max_per_mode: int | None = None,
     invented_limit: int | None = None,
     invented_auto: bool = False,
+    topic_map: dict | None = None,
 ) -> tuple[dict[str, int], dict[str, object]]:
     """先算这个仓库能出多少条题，再决定建几个目录。
 
@@ -143,6 +144,7 @@ def capacity_driven_counts(
         **({} if max_per_mode is None else {"max_per_mode": max_per_mode}),
         **({} if invented_limit is None else {"invented_limit": invented_limit}),
         **({"invented_auto": invented_auto} if invented_auto else {}),
+        topic_map=topic_map,
     )
     counts: dict[str, int] = {}
     for slug, task_type in TYPE_BY_SLUG.items():

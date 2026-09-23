@@ -307,6 +307,7 @@ def run_write_gates(
     invented_subjects: dict[str, set[str]] | None = None,
     invented_blacklist: set[str] | None = None,
     invented_limit: int | None = None,
+    topic_map: dict | None = None,
 ) -> dict:
     """写表前的三道闸：同仓库主题去重、难度下限、提示词查重。
 
@@ -338,6 +339,7 @@ def run_write_gates(
         repo_ledger_path,
     )
     from check_repo_theme import DEFAULT_CORPUS_PATH
+    from repo_topic_policy import load_topic_map
 
     if judgement_corpus is None and DEFAULT_CORPUS_PATH.exists():
         try:
@@ -365,6 +367,8 @@ def run_write_gates(
             justifications[label] = note
 
     derived = derive_repo_modules(repo) if repo else {}
+    if topic_map is None:
+        topic_map = load_topic_map(repo=repo, parent=parent)
     base_ledger = merge_ledgers(
         load_ledger(parent / LEDGER_FILENAME),
         load_ledger(repo_ledger_path(repo)) if repo else {},
@@ -392,6 +396,7 @@ def run_write_gates(
         min_candidate_recall=min_candidate_recall,
         base_ledger=base_ledger,
         derived=derived,
+        topic_map=topic_map,
         repair_labels=repair_labels,
         exempt_labels=exempt_labels,
         require_ledger=True,
@@ -411,8 +416,15 @@ def run_write_gates(
     dedup = dedup_check(items, 0.2)
 
     problems: list[str] = []
+    pending_rows = sum(1 for record in records if not str(record.get("提示词") or "").strip())
+    deferred_batch_ratios = {
+        "新增能力类占比超额",
+        "模式占比超额",
+    } if pending_rows else set()
     for violation in theme.get("violations", []) or []:
         kind = violation.get("kind")
+        if kind in deferred_batch_ratios:
+            continue
         detail = (
             violation.get("subject_mode") or violation.get("subject") or violation.get("mode")
             or violation.get("labels") or ""
@@ -458,7 +470,10 @@ def run_write_gates(
         "problems": problems,
         "theme": {
             "ok": theme.get("ok"),
+            "topic_policy": theme.get("topic_policy"),
             "module_counts": theme.get("module_counts"),
+            "topic_counts": theme.get("topic_counts"),
+            "topic_mode_counts": theme.get("topic_mode_counts"),
             "mode_counts": theme.get("mode_counts"),
             "subject_mode_counts": theme.get("subject_mode_counts"),
             "task_type_counts": theme.get("task_type_counts"),
@@ -495,6 +510,9 @@ def write_generation_manifest(
         "gate_version": gate.get("gate_version"),
         "gate_ok": gate.get("ok"),
         "module_counts": (gate.get("theme") or {}).get("module_counts"),
+        "topic_policy": (gate.get("theme") or {}).get("topic_policy"),
+        "topic_counts": (gate.get("theme") or {}).get("topic_counts"),
+        "topic_mode_counts": (gate.get("theme") or {}).get("topic_mode_counts"),
         "subject_mode_counts": (gate.get("theme") or {}).get("subject_mode_counts"),
         "mode_counts": (gate.get("theme") or {}).get("mode_counts"),
         "task_type_counts": (gate.get("theme") or {}).get("task_type_counts"),
@@ -552,6 +570,8 @@ def update(
     prompt_type: str | None,
     *,
     repo: Path | None = None,
+    topic_map: str | Path | None = None,
+    require_topic_map: bool = False,
     allow_gate_failure: bool = False,
     skip_version_check: bool = False,
     max_per_mode: int | None = None,
@@ -663,6 +683,13 @@ def update(
     manifest = None
     if prompt is not None:
         repo_path = repo or detect_repo(parent)
+        from repo_topic_policy import load_topic_map
+        loaded_topic_map = load_topic_map(
+            repo=repo_path,
+            parent=parent,
+            explicit=topic_map,
+            required=require_topic_map,
+        )
         skill = {} if skip_version_check else skill_freshness()
         if skill.get("checked") and int(skill.get("behind") or 0) > 0:
             raise SystemExit(
@@ -671,8 +698,13 @@ def update(
                 "确实要用当前版本就加 --skip-version-check"
             )
         gate = run_write_gates(
-            parent, records, repo=repo_path, max_per_mode=max_per_mode,
-            invented_subjects=invented_subjects, invented_limit=invented_limit,
+            parent,
+            records,
+            repo=repo_path,
+            max_per_mode=max_per_mode,
+            invented_subjects=invented_subjects,
+            invented_limit=invented_limit,
+            topic_map=loaded_topic_map,
         )
         gate["skill"] = skill
         if not gate["ok"] and not allow_gate_failure:
@@ -703,6 +735,9 @@ def update(
             "gate_version": gate.get("gate_version"),
             "problems": gate.get("problems"),
             "module_counts": (gate.get("theme") or {}).get("module_counts"),
+            "topic_policy": (gate.get("theme") or {}).get("topic_policy"),
+            "topic_counts": (gate.get("theme") or {}).get("topic_counts"),
+            "topic_mode_counts": (gate.get("theme") or {}).get("topic_mode_counts"),
             "mode_counts": (gate.get("theme") or {}).get("mode_counts"),
             "subject_mode_counts": (gate.get("theme") or {}).get("subject_mode_counts"),
             "new_capability_ratio": (gate.get("theme") or {}).get("new_capability_ratio"),
@@ -796,6 +831,9 @@ def main() -> None:
     parser.add_argument("--range")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--repo", help="仓库路径；默认自动找父目录下任意任务目录的 origin")
+    parser.add_argument("--topic-map", help="GSB semantic-v2 topic map")
+    parser.add_argument("--require-topic-map", action="store_true",
+                        help="缺少 topic map 时拒绝写表")
     parser.add_argument("--allow-gate-failure", action="store_true",
                         help="闸门不通过也强行写表（默认拒写；被平台判废弃的记录不可返修，慎用）")
     parser.add_argument("--skip-version-check", action="store_true",
@@ -833,6 +871,8 @@ def main() -> None:
         result = update(
             parent, args.workbook, args.folder, args.prompt, args.note, args.status, args.prompt_type,
             repo=Path(args.repo).expanduser().resolve() if args.repo else None,
+            topic_map=args.topic_map,
+            require_topic_map=args.require_topic_map,
             allow_gate_failure=args.allow_gate_failure,
             skip_version_check=args.skip_version_check,
             max_per_mode=args.max_per_mode,

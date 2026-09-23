@@ -62,6 +62,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import batch_prompt_workbook as workbook_lib  # noqa: E402
+from repo_topic_policy import (  # noqa: E402
+    detect_topic,
+    load_topic_map,
+    topic_module_limits,
+    topic_seat_limits,
+    topic_slots,
+)
 
 
 LEDGER_FILENAME = "repo-theme-ledger.json"
@@ -190,7 +197,13 @@ REPO_SOURCE_PATTERNS = (
     "frontend/src/**/*.ts",
     "frontend/src/**/*.vue",
     "frontend/src/**/*.jsx",
+    "client/src/**/*.tsx",
+    "client/src/**/*.ts",
+    "client/src/**/*.vue",
+    "client/src/**/*.jsx",
     "backend/app/**/*.py",
+    "server/src/**/*.js",
+    "server/src/**/*.ts",
     "src/**/*.ts",
     "src/**/*.tsx",
     "app/**/*.py",
@@ -539,8 +552,15 @@ def cjk_ngrams(text: str, size: int = NGRAM_SIZE) -> set[str]:
     return grams
 
 
-def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
-             *, is_repair: bool = False, exempt: bool = False) -> dict[str, object]:
+def classify(
+    label: str,
+    text: str,
+    derived: dict[str, set[str]] | None = None,
+    *,
+    is_repair: bool = False,
+    exempt: bool = False,
+    topic_map: dict | None = None,
+) -> dict[str, object]:
     primary, secondary = detect_modules(text)
     if derived:
         derived_name, derived_score = detect_derived_module(text, derived)
@@ -549,16 +569,30 @@ def classify(label: str, text: str, derived: dict[str, set[str]] | None = None,
             if derived_name not in secondary:
                 secondary.append(derived_name)
     mode, modes = detect_modes(text)
+    topic = detect_topic(text, topic_map)
+    topic_id = str(topic.get("topic") or "")
+    if topic.get("topic_module"):
+        primary = str(topic["topic_module"])
+    capabilities = detect_capabilities(text)
     return {
         "label": label,
         "module": primary,
         "modules": ([primary] if primary else []) + secondary,
-        "capabilities": detect_capabilities(text),
+        "topic": topic_id,
+        "topic_name": str(topic.get("topic_name") or ""),
+        "topic_module": str(topic.get("topic_module") or ""),
+        "topic_score": int(topic.get("topic_score") or 0),
+        "topic_keywords": list(topic.get("topic_keywords") or []),
+        "topic_seat_capacity": int(topic.get("topic_seat_capacity") or 0),
+        "topic_allowed_families": list(topic.get("topic_allowed_families") or []),
+        "topic_ambiguous": list(topic.get("topic_ambiguous") or []),
+        "capabilities": capabilities,
         "skeletons": detect_skeletons(text),
         "mode": mode,
         "modes": modes,
         "subject_mode": f"{primary}|{mode}" if primary and mode else "",
-        "feature_point": feature_point(primary, detect_capabilities(text)),
+        "topic_mode": f"{topic_id}|{mode}" if topic_id and mode else "",
+        "feature_point": feature_point(topic_id or primary, capabilities),
         "capability_words": sorted(capability_content_words(text)),
         "object_words": sorted(object_content_words(text)),
         "ngrams": sorted(cjk_ngrams(text)),
@@ -640,13 +674,15 @@ def pair_features(a: dict, b: dict, text_a: str, text_b: str) -> dict[str, objec
     所以它当复核清单的判据；而「同主体 + 同模式」只有 35%–52%，只当硬拦。
     """
     modules = set(a["modules"]) & set(b["modules"])
+    topics = {item for item in (a.get("topic"), b.get("topic")) if item} if a.get("topic") == b.get("topic") else set()
     modes = set(a["modes"]) & set(b["modes"])
     capabilities = set(a["capabilities"]) & set(b["capabilities"])
     skeletons = set(a["skeletons"]) & set(b["skeletons"])
     words = set(a["capability_words"]) & set(b["capability_words"])
     same_subject = bool(a["module"] and a["module"] == b["module"])
+    same_topic = bool(a.get("topic") and a.get("topic") == b.get("topic"))
     structure = 0.0
-    if same_subject:
+    if same_topic or (not a.get("topic") and same_subject):
         structure += 0.55
     if modes:
         structure += 0.25 * min(1.0, len(modes) / 2.0)
@@ -659,11 +695,13 @@ def pair_features(a: dict, b: dict, text_a: str, text_b: str) -> dict[str, objec
         text_score = 0.0
     return {
         "modules": sorted(modules),
+        "topics": sorted(topics),
         "modes": sorted(modes),
         "capabilities": sorted(capabilities),
         "skeletons": sorted(skeletons),
         "shared_words": sorted(words),
         "same_subject": same_subject,
+        "same_topic": same_topic,
         "score": round(0.6 * min(1.0, structure) + 0.4 * text_score, 4),
     }
 
@@ -686,15 +724,20 @@ def build_review_list(records: list[dict], *, neighbors: int = DEFAULT_REVIEW_NE
         review.append({
             "label": record["label"],
             "subject": record["module"],
+            "topic": record.get("topic", ""),
+            "topic_name": record.get("topic_name", ""),
             "mode": record["mode"],
             "subject_mode": record["subject_mode"],
+            "topic_mode": record.get("topic_mode", ""),
             "neighbors": [
                 {
                     "label": other["label"],
                     "subject": other["module"],
+                    "topic": other.get("topic", ""),
                     "mode": other["mode"],
                     "score": features["score"],
                     "same_subject": features["same_subject"],
+                    "same_topic": features["same_topic"],
                     "shared_modes": features["modes"],
                     "shared_words": features["shared_words"][:6],
                     # 同主体两条题的对象词重合数：默认不硬拦，但复核时优先看这一项
@@ -761,6 +804,7 @@ def compute_capacity(
     max_new_capability_ratio: float = DEFAULT_MAX_NEW_CAPABILITY_RATIO,
     invented_limit: int | None = None,
     invented_auto: bool = False,
+    topic_map: dict | None = None,
 ) -> dict[str, object]:
     """这个仓库最多能出多少条题：按「主体 × 需求模式」的座位数算，不按想要多少条算。
 
@@ -781,8 +825,11 @@ def compute_capacity(
     """
     subjects = sorted((derived or {}).keys())
     subject_slots = len(subjects) * max_per_subject
+    semantic_topic_slots = topic_slots(topic_map)
     mode_slots = len(DEMAND_MODE_LEXICON) * max_per_mode
-    base_capacity = min(max_per_repo, subject_slots, mode_slots)
+    profile_cap = int((topic_map or {}).get("max_capacity") or max_per_repo)
+    base_seat_slots = semantic_topic_slots if topic_map else subject_slots
+    base_capacity = min(max_per_repo, base_seat_slots, mode_slots, profile_cap)
     base_mix = suggest_type_mix(base_capacity, max_new_capability_ratio=max_new_capability_ratio)
     invented_ratio_bound = max(
         0,
@@ -797,11 +844,17 @@ def compute_capacity(
         invented_ceiling = 0
     invented_slots = min(invented_ceiling, invented_ratio_bound)
     subject_total_slots = subject_slots + invented_slots
-    capacity = min(max_per_repo, subject_total_slots, mode_slots)
+    seat_total_slots = semantic_topic_slots + invented_slots if topic_map else subject_total_slots
+    profile_total_cap = profile_cap + invented_slots if topic_map else max_per_repo
+    capacity = min(max_per_repo, seat_total_slots, mode_slots, profile_total_cap)
     binding = "repo"
-    if subject_total_slots <= min(max_per_repo, mode_slots):
+    if topic_map and semantic_topic_slots <= min(max_per_repo, mode_slots, profile_cap):
+        binding = "topic"
+    elif topic_map and profile_cap <= min(max_per_repo, semantic_topic_slots, mode_slots):
+        binding = "profile"
+    elif not topic_map and subject_total_slots <= min(max_per_repo, mode_slots):
         binding = "subject"
-    elif mode_slots <= min(max_per_repo, subject_total_slots):
+    elif mode_slots <= min(max_per_repo, seat_total_slots, profile_total_cap):
         binding = "mode"
     # 阈值按这个项目的历史仓库标定：常见仓库 8–13 个主体，1 条/主体 就是它们的正常产能，
     # 所以「小于 8」才需要换仓库，不要因为容量只有 10 出头就劝用户换。
@@ -811,9 +864,29 @@ def compute_capacity(
         verdict = "容量正常，按容量出题"
     else:
         verdict = "容量偏小：这个仓库撑不起一批，建议换主体更多的仓库"
+    type_mix = suggest_type_mix(capacity, max_new_capability_ratio=max_new_capability_ratio)
+    disabled_task_types: list[str] = []
+    reallocated: dict[str, int] = {}
+    if (topic_map or {}).get("profile") == "gsb-semantic-v2" and type_mix.get("代码理解"):
+        freed = int(type_mix["代码理解"])
+        type_mix["代码理解"] = 0
+        type_mix["缺陷修复"] = int(type_mix.get("缺陷修复") or 0) + freed
+        disabled_task_types = ["代码理解"]
+        reallocated = {"代码理解 -> 缺陷修复": freed}
     return {
         "capacity": capacity,
         "binding_limit": binding,
+        "policy": str((topic_map or {}).get("profile") or "legacy-module-v1"),
+        "topic_count": len((topic_map or {}).get("topics") or []),
+        "topics": [
+            {
+                "id": str(topic.get("id") or ""),
+                "name": str(topic.get("name") or ""),
+                "seat_capacity": int(topic.get("seat_capacity") or 0),
+            }
+            for topic in (topic_map or {}).get("topics") or []
+        ],
+        "topic_slots": semantic_topic_slots,
         "subject_count": len(subjects),
         "subjects": subjects,
         "subject_slots": subject_slots,
@@ -826,11 +899,14 @@ def compute_capacity(
         "max_per_repo": max_per_repo,
         "max_per_subject": max_per_subject,
         "max_per_mode": max_per_mode,
-        "type_mix": suggest_type_mix(capacity, max_new_capability_ratio=max_new_capability_ratio),
+        "type_mix": type_mix,
+        "disabled_task_types": disabled_task_types,
+        "reallocated": reallocated,
         "new_capability_ratio_limit": max_new_capability_ratio,
         "verdict": verdict,
         "rule": "容量 = min(单仓库上限, 既有主体数 × 每主体上限 + 0-1 新主体座位, "
-                "需求模式数 × 每模式上限)；新主体只配代码生成且每个只坐一条",
+                "业务 topic 座位 / 既有主体座位, 需求模式数 × 每模式上限, profile 上限)；"
+                "新主体只配代码生成且每个只坐一条",
         "invented_rule": "0-1 新主体座位 = min(单批上限 min(5, ceil(既有主体数 / 2)), "
                          "新增能力类 ≤ 50% 反推上限)",
     }
@@ -852,7 +928,30 @@ def evaluate_corpus(corpus: dict | None) -> dict[str, object]:
         if not records_in:
             continue
         repo = batch.get("repo_path")
-        derived = derive_repo_modules(Path(repo)) if repo and Path(repo).is_dir() else {}
+        repo_path = Path(repo) if repo else None
+        if not repo_path or not repo_path.is_dir():
+            per_batch.append({
+                "project": batch.get("project"),
+                "judged_pairs": len(batch.get("judged_pairs") or []),
+                "hard_hits": 0,
+                "candidate_hits": 0,
+                "batch_ok": None,
+                "batch_violations": [],
+                "skipped_reason": "fixture_repo_missing",
+            })
+            continue
+        derived = derive_repo_modules(repo_path)
+        if not derived:
+            per_batch.append({
+                "project": batch.get("project"),
+                "judged_pairs": len(batch.get("judged_pairs") or []),
+                "hard_hits": 0,
+                "candidate_hits": 0,
+                "batch_ok": None,
+                "batch_violations": [],
+                "skipped_reason": "fixture_repo_has_no_derived_subjects",
+            })
+            continue
         labels = [
             f"{row['n']}[{row.get('type') or ''}]" for row in records_in
         ]
@@ -930,6 +1029,7 @@ def check(
     judgement_corpus: dict | None = None,
     base_ledger: dict | None = None,
     derived: dict[str, set[str]] | None = None,
+    topic_map: dict | None = None,
     repair_labels: set[str] | None = None,
     exempt_labels: set[str] | None = None,
     require_ledger: bool = False,
@@ -945,7 +1045,8 @@ def check(
     records = [
         classify(label, text, derived,
                  is_repair=label in repair_labels,
-                 exempt=label in exempt_labels)
+                 exempt=label in exempt_labels,
+                 topic_map=topic_map)
         for label, text in items
     ]
     # 0-1 新主体：仓库里还没有的模块，题面按生成方登记的新主体词表落位；
@@ -1009,26 +1110,39 @@ def check(
             mode, modes = detect_modes(cleaned)
             record["mode"], record["modes"] = mode, modes
             record["subject_mode"] = f"{record['module']}|{mode}" if record["module"] and mode else ""
-    # 主体配额 +「主体 + 需求模式」唯一：平台判词里「同为围栏模块的属性扩展，功能点不同」
-    # 也照样作废，所以默认同一个主体只能 1 条，同一个「主体 + 模式」格子也只能有 1 条。
+            record["topic_mode"] = f"{record['topic']}|{mode}" if record["topic"] and mode else ""
+    # legacy 口径按 module 配额；GSB semantic-v2 口径按 topic 配额，module 只保留总护栏。
     primary_counter: Counter[str] = Counter()
     subject_mode_counter: Counter[str] = Counter()
+    topic_counter: Counter[str] = Counter()
+    topic_mode_counter: Counter[str] = Counter()
     mode_counter: Counter[str] = Counter()
     for record in records:
         if record["module"]:
             primary_counter[str(record["module"])] += 1
-        if record["subject_mode"]:
+        if record.get("topic"):
+            topic_counter[str(record["topic"])] += 1
+        if record.get("subject_mode"):
             subject_mode_counter[str(record["subject_mode"])] += 1
+        if record.get("topic_mode"):
+            topic_mode_counter[str(record["topic_mode"])] += 1
         if record["mode"]:
             mode_counter[str(record["mode"])] += 1
     for entry in ledger_entries:
         if entry.get("module"):
             primary_counter[str(entry["module"])] += 1
+        if entry.get("topic"):
+            topic_counter[str(entry["topic"])] += 1
         subject_mode = str(entry.get("subject_mode") or "")
         if not subject_mode and entry.get("module") and entry.get("mode"):
             subject_mode = f"{entry['module']}|{entry['mode']}"
         if subject_mode:
             subject_mode_counter[subject_mode] += 1
+        topic_mode = str(entry.get("topic_mode") or "")
+        if not topic_mode and entry.get("topic") and entry.get("mode"):
+            topic_mode = f"{entry['topic']}|{entry['mode']}"
+        if topic_mode:
+            topic_mode_counter[topic_mode] += 1
         if entry.get("mode"):
             mode_counter[str(entry["mode"])] += 1
     violations: list[dict[str, object]] = []
@@ -1038,7 +1152,7 @@ def check(
             "why": f"同仓库出题必须先建 {LEDGER_FILENAME} 台账并逐条登记主体与需求模式；"
                    "没有台账就不许写提示词工作簿",
         })
-    if not any(record["module"] for record in records) and not primary_counter:
+    if records and not any(record["module"] for record in records) and not primary_counter:
         violations.append({
             "kind": "主体未识别",
             "why": "这批题的主体（改的是仓库里的哪一块）一个都没识别出来，"
@@ -1135,6 +1249,32 @@ def check(
                    "既有主体数 " + str(existing_subject_count) + "）：低于这个上限才属于"
                    "「可控扩容」，再往上就回到 0-1 代码生成 59% 废弃率的老路。",
         })
+    if topic_map:
+        unknown_topics = [
+            record["label"] for record in records
+            if not record.get("topic")
+        ]
+        if unknown_topics:
+            violations.append({
+                "kind": "业务主题未识别",
+                "count": len(unknown_topics),
+                "limit": 0,
+                "labels": unknown_topics[:8],
+                "why": "启用 semantic topic 策略后，每条题面都必须落回 topic map 中的一个业务对象；"
+                       "识别不出来时先修题面关键词，不能靠粗粒度模块容量绕过。",
+            })
+        ambiguous = [
+            {"label": record["label"], "topics": record.get("topic_ambiguous") or []}
+            for record in records if record.get("topic_ambiguous")
+        ]
+        if ambiguous:
+            violations.append({
+                "kind": "业务主题歧义",
+                "count": len(ambiguous),
+                "items": ambiguous[:8],
+                "why": "同一条题面同时命中多个业务 topic 且分值相同，必须先明确主 topic，"
+                       "否则后续 topic 题位无法可靠排座。",
+            })
     total = len(records) + len(ledger_entries)
     if total > max_per_repo:
         violations.append({
@@ -1145,32 +1285,60 @@ def check(
                    "铺得越多最近邻越近（实测 48/49 条的批次废弃 44%/35%）。"
                    "超出的部分换仓库出，或直接砍掉。",
         })
-    # 主体 + 需求模式唯一：这一格重复就是平台判词里的「同为X模块的属性扩展 / 同在X新增能力」。
-    for slot, count in subject_mode_counter.items():
+    # legacy 用主体格子；semantic-v2 用业务 topic 格子，源码模块只保留总座位护栏。
+    slot_counter = topic_mode_counter if topic_map else subject_mode_counter
+    slot_kind = "业务 topic + 需求模式" if topic_map else "主体 + 需求模式"
+    for slot, count in slot_counter.items():
         if count > 1:
             violations.append({
-                "kind": "主体模式重复",
-                "subject_mode": slot,
+                "kind": "业务主题模式重复" if topic_map else "主体模式重复",
+                "subject_mode": "" if topic_map else slot,
+                "topic_mode": slot if topic_map else "",
                 "count": count,
-                "why": "同一个「主体 + 需求模式」只能出 1 条：平台判词原话「同为围栏模块的属性扩展，"
-                       "功能点不同」也判作废。换主体、换需求模式，或把这条并入上一条",
+                "why": f"同一个「{slot_kind}」只能出 1 条：平台判词原话「同为围栏模块的属性扩展，"
+                       "功能点不同」也判作废。换业务 topic、换需求模式，或把这条并入上一条",
             })
-    for subject, count in primary_counter.items():
-        if count > max_per_subject:
-            violations.append({
-                "kind": "同主体超额",
-                "subject": subject,
-                "count": count,
-                "limit": max_per_subject,
-                "why": f"同一个主体最多出 {max_per_subject} 条（默认 1）：实测判废对里同主体对占 71%–76%，"
-                       "而且同主体对里 73%–95% 共享仓库实体词，靠换措辞或换模式标签都区分不开。"
-                       "超出的必须换主体；这个仓库主体不够就换主体更多的仓库。",
-            })
+    if topic_map:
+        for topic_id, count in topic_counter.items():
+            limit = topic_seat_limits(topic_map).get(topic_id, 1)
+            if count > limit:
+                violations.append({
+                    "kind": "业务主题超额",
+                    "topic": topic_id,
+                    "count": count,
+                    "limit": limit,
+                    "why": f"业务主题 {topic_id} 的 seat_capacity={limit}，当前已占 {count} 条。"
+                           "超出后必须换业务对象或换仓库。",
+                })
+        module_limits = topic_module_limits(topic_map)
+        for module, count in primary_counter.items():
+            limit = module_limits.get(module)
+            if limit is not None and count > limit:
+                violations.append({
+                    "kind": "源码模块护栏超额",
+                    "subject": module,
+                    "count": count,
+                    "limit": limit,
+                    "why": f"源码模块 {module} 的业务主题座位总数为 {limit}，当前已占 {count} 条。"
+                           "要么减少该模块题量，要么补足该模块的 topic 证据。",
+                })
+    else:
+        for subject, count in primary_counter.items():
+            if count > max_per_subject:
+                violations.append({
+                    "kind": "同主体超额",
+                    "subject": subject,
+                    "count": count,
+                    "limit": max_per_subject,
+                    "why": f"同一个主体最多出 {max_per_subject} 条（默认 1）：实测判废对里同主体对占 71%–76%，"
+                           "而且同主体对里 73%–95% 共享仓库实体词，靠换措辞或换模式标签都区分不开。"
+                           "超出的必须换主体；这个仓库主体不够就换主体更多的仓库。",
+                })
     # 同主体 + 同任务家族：放开到每主体 2 条时，两条必须跨家族。
     # 依据：38 对真实判废对里，同家族同主体被判废的有 代码生成↔代码生成 14 对、
     # 代码生成↔功能迭代 11 对、功能迭代↔功能迭代 10 对、缺陷修复↔缺陷修复 3 对；
     # 而「新增能力类 ↔ 缺陷修复」这种跨家族组合一对都没有。所以同家族的第二个主体题必须换主体。
-    if max_per_subject >= 2:
+    if max_per_subject >= 2 or topic_map:
         family_of: dict[str, str] = {}
         for record in records:
             match = re.search(r"\[(.+?)\]$", str(record["label"]))
@@ -1178,26 +1346,27 @@ def check(
         same_family: list[dict[str, object]] = []
         for index, record in enumerate(records):
             for other in records[:index]:
-                if not record["module"] or record["module"] != other["module"]:
+                group_key = "topic" if topic_map else "module"
+                if not record.get(group_key) or record.get(group_key) != other.get(group_key):
                     continue
                 family = family_of.get(str(record["label"]), "")
                 if family and family == family_of.get(str(other["label"]), ""):
                     same_family.append({
-                        "subject": record["module"],
+                        "subject": record.get(group_key),
                         "family": family,
                         "a": other["label"],
                         "b": record["label"],
                     })
         if same_family:
             violations.append({
-                "kind": "同主体同家族",
+                "kind": "同业务主题同家族" if topic_map else "同主体同家族",
                 "count": len(same_family),
                 "pairs": same_family[:8],
-                "why": "同一个主体上的两条题属于同一个任务家族（都是新增能力，或都是缺陷修复）："
+                "why": "同一个出题对象上的两条题属于同一个任务家族（都是新增能力，或都是缺陷修复）："
                        "38 对真实判废对里，同家族同主体被判废的有代码生成↔代码生成 14 对、"
                        "代码生成↔功能迭代 11 对、功能迭代↔功能迭代 10 对、缺陷修复↔缺陷修复 3 对，"
                        "而「新增能力类 ↔ 缺陷修复」这种跨家族组合一对都没有。"
-                       "第二条要么换成另一个家族，要么换主体出。",
+                       "第二条要么换成另一个家族，要么换出题对象。",
             })
     # 同主体 + 同业务对象：判据的第三根轴。显式放开到每主体 2 条时（--max-per-subject 2），
     # 这两条必须落在**不同的对象面**上，
@@ -1207,26 +1376,27 @@ def check(
         collided: list[dict[str, object]] = []
         for index, record in enumerate(records):
             for other in records[:index]:
-                if not record["module"] or record["module"] != other["module"]:
+                group_key = "topic" if topic_map else "module"
+                if not record.get(group_key) or record.get(group_key) != other.get(group_key):
                     continue
                 shared = set(record["object_words"]) & set(other["object_words"])
                 if len(shared) >= min_shared_object_words:
                     collided.append({
-                        "subject": record["module"],
+                        "subject": record.get(group_key),
                         "a": other["label"],
                         "b": record["label"],
                         "shared_object_words": sorted(shared)[:8],
                     })
         if collided:
             violations.append({
-                "kind": "同主体同对象",
+                "kind": "同业务主题同对象" if topic_map else "同主体同对象",
                 "count": len(collided),
                 "limit": min_shared_object_words,
                 "pairs": collided[:8],
-                "why": f"同一个主体上有 {len(collided)} 对题的**业务对象实词重合 ≥ "
+                "why": f"同一个业务对象上有 {len(collided)} 对题的**业务对象实词重合 ≥ "
                        f"{min_shared_object_words} 个**：模式标签虽然不同，平台判的是对象，"
-                       "照样按「同为该模块的同类改造」判作废。这两条要换主体，"
-                       "或者把第二条改到该主体的另一个对象面上。",
+                       "照样按「同为该模块的同类改造」判作废。这两条要换业务主题，"
+                       "或者把第二条改到该主题的另一个对象面上。",
             })
     # 同模式重复：判词集合运算显示，判废对「同主体」占 22/38、「跨主体但同模式」占 15/38，
     # 两者都不沾的只有 1 对。所以主体与模式都唯一，就能机械拦下 97.4% 的判废对。
@@ -1292,29 +1462,36 @@ def check(
     for index, record in enumerate(records):
         for other in records[:index]:
             shared_modules = set(record["modules"]) & set(other["modules"])
+            shared_topics = (
+                {record.get("topic")} & {other.get("topic")}
+                if record.get("topic") and other.get("topic") else set()
+            )
             shared_capabilities = set(record["capabilities"]) & set(other["capabilities"])
             shared_skeletons = set(record["skeletons"]) & set(other["skeletons"])
             shared_words = set(record["capability_words"]) & set(other["capability_words"])
             shared_modes = set(record["modes"]) & set(other["modes"])
-            near_words = bool(shared_modules) and len(shared_words) >= FEATURE_NEAR_CANDIDATE
-            if not (shared_modules or shared_modes):
+            shared_subjects = shared_topics if topic_map else shared_modules
+            subject_label = "业务主题" if topic_map else "主体"
+            near_words = bool(shared_subjects) and len(shared_words) >= FEATURE_NEAR_CANDIDATE
+            if not (shared_subjects or shared_modes):
                 continue
             if shared_modes:
                 reason = (
-                    f"同主体且需求模式有交集（{'/'.join(sorted(shared_modes))}）："
+                    f"同{subject_label}且需求模式有交集（{'/'.join(sorted(shared_modes))}）："
                     "平台判词把这类直接算同题，功能点不同也照判"
-                    if shared_modules else
-                    f"跨主体的同需求模式对（{'/'.join(sorted(shared_modes))}）："
+                    if shared_subjects else
+                    f"跨{subject_label}的同需求模式对（{'/'.join(sorted(shared_modes))}）："
                     "判废对里有 29%–59% 正是这种跨模块同模式对"
                 )
             else:
-                reason = (f"同主体（{'/'.join(sorted(shared_modules))}）"
+                reason = (f"同{subject_label}（{'/'.join(sorted(shared_subjects))}）"
                           + ("，且能力短语实词重合较多" if near_words else ""))
             candidates.append({
                 "a": other["label"],
                 "b": record["label"],
                 "risk": "高" if shared_modes else "中",
                 "modules": sorted(shared_modules),
+                "topics": sorted(shared_topics),
                 "modes": sorted(shared_modes),
                 "capabilities": sorted(shared_capabilities),
                 "skeletons": sorted(shared_skeletons),
@@ -1347,7 +1524,11 @@ def check(
 
     return {
         "ok": not violations,
-        "rule": "平台查重规则 C：同主体 + 同需求模式判废（含跨主体同模式）",
+        "rule": (
+            "GSB semantic-v2：同业务 topic + 同需求模式判废；topic 座位与源码模块护栏分别校验"
+            if topic_map else
+            "平台查重规则 C：同主体 + 同需求模式判废（含跨主体同模式）"
+        ),
         "gate_version": GATE_VERSION,
         "limits": {
             "max_per_repo": max_per_repo,
@@ -1359,6 +1540,9 @@ def check(
             "min_shared_object_words": min_shared_object_words,
         },
         "max_per_module": max_per_module,
+        "topic_policy": str((topic_map or {}).get("profile") or ""),
+        "topic_counts": dict(topic_counter.most_common()),
+        "topic_mode_counts": dict(topic_mode_counter.most_common()),
         "checked_count": len(records),
         "module_counts": dict(primary_counter.most_common()),
         "subject_mode_counts": dict(subject_mode_counter.most_common()),
@@ -1537,6 +1721,8 @@ def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | No
     }
     if gate_result is not None:
         payload["module_counts"] = gate_result.get("module_counts", {})
+        payload["topic_counts"] = gate_result.get("topic_counts", {})
+        payload["topic_mode_counts"] = gate_result.get("topic_mode_counts", {})
         payload["subject_mode_counts"] = gate_result.get("subject_mode_counts", {})
         payload["mode_counts"] = gate_result.get("mode_counts", {})
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1544,7 +1730,8 @@ def write_repo_ledger(repo: Path, entries: list[dict], *, gate_result: dict | No
 
 
 LEDGER_ENTRY_FIELDS = (
-    "label", "module", "modules", "mode", "modes", "subject_mode", "capabilities",
+    "label", "module", "modules", "topic", "topic_name", "topic_mode",
+    "mode", "modes", "subject_mode", "capabilities",
     "skeletons", "feature_point", "capability_words", "object_words", "template_clauses",
     "repair_round", "module_exempt",
     # 0-1 新主体的登记：来源与词表要跨批次留着，后续批次才能继续判主体、查配额与拉黑。
@@ -1557,31 +1744,44 @@ def ledger_entry(record: dict) -> dict:
     return {key: record[key] for key in LEDGER_ENTRY_FIELDS if key in record}
 
 
-def build_feature_points(repo: Path, derived: dict[str, set[str]], result: dict) -> dict:
-    """出题前先落一份题位表：主体（含关键词）+ 需求模式 + 已被占用的「主体 × 模式」格子。
-
-    出题时按这张表分配题位，而不是写完几十条再查重：一个格子只能坐一条题，
-    写不出差异就得换主体或换模式。这就是把「事后查重」换成「事前排座」。
-    """
+def build_feature_points(
+    repo: Path,
+    derived: dict[str, set[str]],
+    result: dict,
+    *,
+    topic_map: dict | None = None,
+) -> dict:
+    """出题前先落一份题位表：业务 topic + 需求模式 + 已占用格子。"""
     occupied: dict[str, list[str]] = {}
     subjects: dict[str, list[str]] = {}
+    topics: dict[str, list[str]] = {}
     modes: dict[str, list[str]] = {}
     for entry in result.get("items", []) or []:
-        slot = entry.get("subject_mode") or ""
+        slot = (entry.get("topic_mode") if topic_map else entry.get("subject_mode")) or ""
         if slot:
             occupied.setdefault(str(slot), []).append(str(entry.get("label")))
         if entry.get("module"):
             subjects.setdefault(str(entry["module"]), []).append(str(entry.get("label")))
+        if entry.get("topic"):
+            topics.setdefault(str(entry["topic"]), []).append(str(entry.get("label")))
         if entry.get("mode"):
             modes.setdefault(str(entry["mode"]), []).append(str(entry.get("label")))
+    legacy_rule = (
+        "每条题面必须落回一个主体；同一「主体 + 需求模式」只出 1 条，"
+        f"同一主体最多 {DEFAULT_MAX_PER_SUBJECT} 条，单仓库最多 {DEFAULT_MAX_PER_REPO} 条，"
+        f"单模式占比不超过 {DEFAULT_MAX_MODE_RATIO:.0%}，"
+        f"新增能力类占比不超过 {DEFAULT_MAX_NEW_CAPABILITY_RATIO:.0%}"
+    )
+    semantic_rule = (
+        "GSB semantic-v2：每条题面必须落回一个业务 topic；同一「topic + 需求模式」只出 1 条，"
+        "topic 不得超过 seat_capacity，源码模块只做总座位护栏"
+    )
     return {
         "gate_version": GATE_VERSION,
         "repo": str(Path(repo).expanduser().resolve()),
-        "rule": "每条题面必须落回一个主体；同一「主体 + 需求模式」只出 1 条，"
-                f"同一主体最多 {DEFAULT_MAX_PER_SUBJECT} 条，单仓库最多 {DEFAULT_MAX_PER_REPO} 条，"
-                f"单模式占比不超过 {DEFAULT_MAX_MODE_RATIO:.0%}，"
-                f"新增能力类占比不超过 {DEFAULT_MAX_NEW_CAPABILITY_RATIO:.0%}",
-        "capacity": compute_capacity(derived),
+        "rule": semantic_rule if topic_map else legacy_rule,
+        "capacity": compute_capacity(derived, topic_map=topic_map),
+        "topic_map": topic_map or {},
         "modules": [
             {"module": name, "keywords": sorted(keywords)[:40]}
             for name, keywords in sorted(derived.items())
@@ -1589,8 +1789,12 @@ def build_feature_points(repo: Path, derived: dict[str, set[str]], result: dict)
         "demand_modes": sorted(DEMAND_MODE_LEXICON),
         "occupied_subject_modes": occupied,
         "occupied_subjects": subjects,
+        "occupied_topics": topics,
+        "occupied_topic_modes": occupied,
         "occupied_modes": modes,
         "module_counts": result.get("module_counts", {}),
+        "topic_counts": result.get("topic_counts", {}),
+        "topic_mode_counts": result.get("topic_mode_counts", {}),
         "mode_counts": result.get("mode_counts", {}),
         "subject_mode_counts": result.get("subject_mode_counts", {}),
         "task_type_counts": result.get("task_type_counts", {}),
@@ -1616,6 +1820,7 @@ def run_gate(
     judgement_corpus: dict | None = None,
     min_candidate_recall: float | None = None,
     max_unknown: int = 0,
+    topic_map: dict | None = None,
 ) -> dict:
     """写入路径专用的整批闸门：读工作簿 → 派生模块 → 合并父目录与仓库台账 → 出结论。"""
     workbook_name = workbook or workbook_lib.DEFAULT_WORKBOOK
@@ -1636,6 +1841,7 @@ def run_gate(
         min_candidate_recall=min_candidate_recall,
         base_ledger=merged,
         derived=derived,
+        topic_map=topic_map,
         repair_labels=repair_labels,
         exempt_labels=exempt_labels,
         require_ledger=require_ledger,
@@ -1645,6 +1851,7 @@ def run_gate(
     result["gate_version"] = GATE_VERSION
     result["workbook"] = str((parent / workbook_name).resolve())
     result["repo"] = str(repo) if repo else ""
+    result["topic_map"] = topic_map or {}
     return result
 
 
@@ -1677,6 +1884,11 @@ def main() -> None:
     parser.add_argument("--workbook", default=workbook_lib.DEFAULT_WORKBOOK)
     parser.add_argument("--prompts-file", help="每行一条提示词的文本文件，与 --parent 二选一")
     parser.add_argument("--repo", help="仓库路径；给了就从仓库源码派生模块词典，题面必须能落回这些模块")
+    parser.add_argument("--topic-map",
+                        help="GSB semantic-v2 topic map；不传时自动查找项目根目录的 "
+                             "repo-topic-map.json")
+    parser.add_argument("--require-topic-map", action="store_true",
+                        help="要求必须使用 semantic-v2 topic map；缺失时直接失败")
     parser.add_argument("--ledger", help="已有台账 json；默认用父目录下的 repo-theme-ledger.json")
     parser.add_argument("--write-ledger", action="store_true", help="把本次分类结果写进台账")
     parser.add_argument("--require-ledger", action="store_true",
@@ -1685,7 +1897,7 @@ def main() -> None:
                         help="写一份功能点清单（默认写到父目录的 repo-feature-points.json）；"
                              "出题前先生成，按清单分配题位")
     parser.add_argument("--capacity", action="store_true",
-                        help="只算这个仓库能出多少条题（主体数 × 每主体上限，再和单仓库上限取小），"
+                        help="只算这个仓库能出多少条题；有 topic map 时按业务 topic 座位计算，"
                              "给出建议类型配比；建仓前先跑这一步决定目录数与 Excel 行数")
     parser.add_argument("--capacity-file", nargs="?", const="", default=None,
                         help="把容量结果写成 JSON（默认写到父目录的 repo-capacity.json）")
@@ -1790,6 +2002,12 @@ def main() -> None:
     invented_blacklist = load_invented_blacklist(parent)
     for name, words in invented_registry.items():
         derived.setdefault(name, set()).update(words)
+    topic_map = load_topic_map(
+        repo=repo_path,
+        parent=parent,
+        explicit=args.topic_map,
+        required=args.require_topic_map,
+    )
     # 建仓前第一步：先算这个仓库能出几条题，再决定建几个目录、写几行 Excel。
     if args.capacity or args.capacity_file is not None:
         capacity = compute_capacity(
@@ -1798,6 +2016,7 @@ def main() -> None:
             max_new_capability_ratio=args.max_new_capability_ratio,
             invented_limit=args.invented_codegen_limit,
             invented_auto=args.invented_auto,
+            topic_map=topic_map,
         )
         capacity["gate_version"] = GATE_VERSION
         if args.capacity_file is not None:
@@ -1840,6 +2059,7 @@ def main() -> None:
         min_candidate_recall=(None if args.no_calibration else args.min_candidate_recall),
         base_ledger=base_ledger,
         derived=derived,
+        topic_map=topic_map,
         repair_labels=repair_labels,
         exempt_labels=exempt_labels,
         require_ledger=args.require_ledger,
@@ -1866,6 +2086,8 @@ def main() -> None:
                 "rule": result["rule"],
                 "limits": result.get("limits", {}),
                 "module_counts": result["module_counts"],
+                "topic_counts": result.get("topic_counts", {}),
+                "topic_mode_counts": result.get("topic_mode_counts", {}),
                 "subject_mode_counts": result.get("subject_mode_counts", {}),
                 "mode_counts": result.get("mode_counts", {}),
                 "entries": list(merged.values()),
@@ -1884,7 +2106,12 @@ def main() -> None:
             if args.write_feature_points
             else (parent / FEATURE_POINTS_FILENAME if parent else Path(FEATURE_POINTS_FILENAME))
         )
-        payload = build_feature_points(repo_path or Path.cwd(), derived, result)
+        payload = build_feature_points(
+            repo_path or Path.cwd(),
+            derived,
+            result,
+            topic_map=topic_map,
+        )
         target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result["feature_points_file"] = str(target)
 

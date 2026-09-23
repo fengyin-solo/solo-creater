@@ -43,6 +43,30 @@ class RepoThemeTest(unittest.TestCase):
             )
             self.assertEqual(result["items"][0]["module"], "RecordingPanel")
 
+    def test_repo_modules_derive_from_client_server_monorepo(self):
+        """client/src 与 server/src 的常见 monorepo 布局也要能派生主体。"""
+        import tempfile
+
+        from check_repo_theme import derive_repo_modules
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            client = repo / "client" / "src" / "components"
+            server = repo / "server" / "src" / "routes"
+            client.mkdir(parents=True)
+            server.mkdir(parents=True)
+            (client / "TemplateCenter.tsx").write_text(
+                "const label = '模板中心'; const tip = '创建白板';",
+                encoding="utf-8",
+            )
+            (server / "boards.js").write_text(
+                "const message = '创建白板失败'; const route = '删除白板';",
+                encoding="utf-8",
+            )
+            derived = derive_repo_modules(repo)
+            self.assertIn("TemplateCenter", derived)
+            self.assertIn("boards", derived)
+
     def test_same_subject_same_mode_is_hard_blocked(self):
         """同一「主体 + 需求模式」只能有一条。
 
@@ -196,6 +220,12 @@ class RepoThemeTest(unittest.TestCase):
 
         corpus_path = Path(__file__).resolve().parent / "fixtures" / "rule-c-corpus.json"
         corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+        missing_repos = [
+            batch.get("repo_path") for batch in corpus["batches"]
+            if not Path(str(batch.get("repo_path") or "")).is_dir()
+        ]
+        if missing_repos:
+            self.skipTest(f"判词语料仓库未随本机同步：{missing_repos}")
         calibration = evaluate_corpus(corpus)
         self.assertEqual(calibration["judged_pairs"], len(
             [pair for batch in corpus["batches"] for pair in batch["judged_pairs"]]
@@ -271,7 +301,96 @@ class CapacityTest(unittest.TestCase):
         self.assertEqual(capacity["binding_limit"], "subject")
         self.assertEqual(capacity["subject_count"], 11)
 
-    def test_capacity_defaults_to_three_per_mode(self):
+    def test_topic_profile_expands_small_spa_capacity(self):
+        """GSB semantic-v2 必须让单页应用按业务对象扩容，而不是按两个源码模块封顶。"""
+        from check_repo_theme import compute_capacity
+
+        topic_map = {
+            "profile": "gsb-semantic-v2",
+            "max_capacity": 6,
+            "topics": [
+                {"id": "graph", "name": "图谱", "seat_capacity": 2},
+                {"id": "search", "name": "检索", "seat_capacity": 2},
+                {"id": "detail", "name": "详情", "seat_capacity": 1},
+                {"id": "rules", "name": "规则", "seat_capacity": 1},
+            ],
+        }
+        derived = {"App": {"图谱", "节点"}, "data": {"词根", "语系"}}
+        capacity = compute_capacity(derived, topic_map=topic_map)
+        self.assertEqual(capacity["capacity"], 6)
+        self.assertEqual(capacity["binding_limit"], "topic")
+        self.assertEqual(capacity["topic_count"], 4)
+        self.assertEqual(capacity["subject_slots"], 4)
+        self.assertEqual(capacity["policy"], "gsb-semantic-v2")
+
+    def test_topic_gate_uses_topic_instead_of_module_quota(self):
+        """同源码模块可以承载多个业务 topic，但 topic + mode 仍须唯一。"""
+        from check_repo_theme import check
+
+        topic_map = {
+            "profile": "gsb-semantic-v2",
+            "topics": [
+                {"id": "graph", "name": "图谱", "seat_capacity": 2,
+                 "keywords": ["图谱", "节点"]},
+                {"id": "detail", "name": "节点详情", "seat_capacity": 2,
+                 "keywords": ["详情面板", "节点详情"]},
+            ],
+        }
+        items = [
+            ("a[代码生成]", "新增图谱节点视图：展示节点关系和缩放状态。"),
+            ("b[缺陷修复]", "右侧详情面板报错：切换词条后旧词义残留。"),
+        ]
+        result = check(items, derived={"App": {"图谱", "节点", "详情"}}, topic_map=topic_map)
+        self.assertTrue(result["ok"], result["violations"])
+        self.assertEqual(result["topic_counts"], {"graph": 1, "detail": 1})
+        self.assertFalse(any(v["kind"] == "同主体超额" for v in result["violations"]))
+
+    def test_topic_mode_duplicate_is_hard_blocked(self):
+        """semantic-v2 的主去重键是 topic + 需求模式。"""
+        from check_repo_theme import check
+
+        topic_map = {
+            "profile": "gsb-semantic-v2",
+            "topics": [
+                {"id": "graph", "name": "图谱", "seat_capacity": 2,
+                 "keywords": ["图谱", "节点"]},
+            ],
+        }
+        items = [
+            ("a[代码生成]", "新增图谱节点视图：展示节点关系和状态。"),
+            ("b[代码生成]", "新增图谱节点模式：展示节点关系和状态。"),
+        ]
+        result = check(items, derived={"App": {"图谱", "节点", "状态"}}, topic_map=topic_map)
+        self.assertFalse(result["ok"], result["violations"])
+        self.assertTrue(
+            any(v["kind"] == "业务主题模式重复" for v in result["violations"]),
+            result["violations"],
+        )
+
+    def test_topic_task_plan_preserves_existing_sequences(self):
+        """topic map 的 task_plan 必须锁定旧编号，只允许向后追加。"""
+        from repo_topic_policy import normalize_topic_map
+
+        payload = {
+            "version": 1,
+            "profile": "gsb-semantic-v2",
+            "max_capacity": 3,
+            "topics": [
+                {"id": "graph", "name": "图谱", "keywords": ["图谱"],
+                 "evidence": ["App.vue:1"], "seat_capacity": 2},
+                {"id": "data", "name": "数据", "keywords": ["词根"],
+                 "evidence": ["data.ts:1"], "seat_capacity": 1},
+            ],
+            "task_plan": [
+                {"sequence": 1, "slug": "codegen", "task_type": "代码生成", "topic": "graph"},
+                {"sequence": 2, "slug": "bug", "task_type": "缺陷修复", "topic": "data"},
+                {"sequence": 3, "slug": "bug", "task_type": "缺陷修复", "topic": "graph"},
+            ],
+        }
+        normalized = normalize_topic_map(payload)
+        self.assertEqual([item["sequence"] for item in normalized["task_plan"]], [1, 2, 3])
+
+    def test_capacity_is_mode_limited_by_default(self):
         from check_repo_theme import DEMAND_MODE_LEXICON, compute_capacity
 
         derived = {f"Comp{index}": {"词"} for index in range(40)}
